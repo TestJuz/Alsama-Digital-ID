@@ -1,0 +1,40 @@
+name: Backend employee authentication validation
+on:
+  pull_request:
+    paths:
+      - 'backend/**'
+      - '.github/workflows/backend-validation.yml'
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install Wrangler
+        working-directory: backend
+        run: npm install --no-audit --no-fund
+      - name: Validate Worker JavaScript
+        working-directory: backend
+        run: node --check src/index.js
+      - name: Prepare local D1
+        working-directory: backend
+        run: |
+          npx wrangler d1 migrations apply alsama-digital-id --local
+          printf 'BOOTSTRAP_TOKEN=%s\n' 'CI-ONLY-not-a-production-secret-1234567890' > .dev.vars
+      - name: Start local Worker and test API
+        working-directory: backend
+        env:
+          TEST_BOOTSTRAP_TOKEN: CI-ONLY-not-a-production-secret-1234567890
+        run: |
+          npx wrangler dev --local --port 8787 > /tmp/alsama-worker.log 2>&1 &
+          for n in $(seq 1 45); do
+            if curl --fail --silent http://127.0.0.1:8787/v1/health > /dev/null; then break; fi
+            sleep 2
+          done
+          if ! curl --fail --silent http://127.0.0.1:8787/v1/health > /dev/null; then cat /tmp/alsama-worker.log; exit 1; fi
+          npm test || { cat /tmp/alsama-worker.log; exit 1; }
