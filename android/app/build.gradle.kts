@@ -14,7 +14,7 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0"
-        val apiBaseUrl = providers.gradleProperty("alsamaApiUrl").orElse("").get()
+        val apiBaseUrl = providers.gradleProperty("alsamaApiUrl").orElse("https://alsama-digital-id-api.alsama-digital-id.workers.dev").get()
         buildConfigField("String", "API_BASE_URL", "\"${apiBaseUrl.replace("\"", "")}\"")
     }
     buildTypes {
