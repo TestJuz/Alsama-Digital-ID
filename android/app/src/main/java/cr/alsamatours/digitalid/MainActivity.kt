@@ -36,6 +36,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.lifecycleScope
+import coil.compose.AsyncImage
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.qrcode.QRCodeWriter
 import cr.alsamatours.digitalid.model.Employee
@@ -217,8 +218,11 @@ private fun Portrait(employee: Employee) {
         }.getOrNull() else null
     }
     Box(Modifier.size(118.dp).background(Mint, CircleShape), contentAlignment=Alignment.Center) {
-        if(bitmap!=null) Image(bitmap.asImageBitmap(),contentDescription="Fotografía del empleado", contentScale=ContentScale.Crop,modifier=Modifier.fillMaxSize())
-        else Icon(Icons.Default.Person,null,tint=Forest,modifier=Modifier.size(68.dp))
+        when {
+            employee.photoUrl.startsWith("https://") -> AsyncImage(model=employee.photoUrl, contentDescription="Fotografía del empleado", contentScale=ContentScale.Crop, modifier=Modifier.fillMaxSize())
+            bitmap!=null -> Image(bitmap.asImageBitmap(),contentDescription="Fotografía del empleado", contentScale=ContentScale.Crop,modifier=Modifier.fillMaxSize())
+            else -> Icon(Icons.Default.Person,null,tint=Forest,modifier=Modifier.size(68.dp))
+        }
     }
 }
 
