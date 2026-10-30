@@ -41,6 +41,7 @@ import com.google.zxing.BarcodeFormat
 import com.google.zxing.qrcode.QRCodeWriter
 import cr.alsamatours.digitalid.model.Employee
 import cr.alsamatours.digitalid.net.ApiClient
+import cr.alsamatours.digitalid.net.InvitationCode
 import kotlinx.coroutines.launch
 import java.net.URLEncoder
 
@@ -57,8 +58,10 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         window.statusBarColor = android.graphics.Color.rgb(18,61,48)
         setContent {
-            var page by remember { mutableStateOf("home") }
-            var employee by remember { mutableStateOf(Employee.sample) }
+            var page by remember { mutableStateOf("login") }
+            var employee by remember { mutableStateOf(Employee()) }
+            var role by remember { mutableStateOf("") }
+            var invitation by remember { mutableStateOf<InvitationCode?>(null) }
             var verified by remember { mutableStateOf(false) }
             var employees by remember { mutableStateOf<List<Employee>>(emptyList()) }
             var editing by remember { mutableStateOf(Employee()) }
@@ -73,7 +76,10 @@ class MainActivity : ComponentActivity() {
             fun syncProfile(slug: String = "sebastian-melendez-rodriguez") {
                 scope.launch {
                     busy = true; error = ""; verified = false
-                    try { employee = api.publicStaff(slug); verified = true }
+                    try {
+                        employee = if (role == "employee") api.myCredential() else if (role == "admin") api.publicStaff(slug) else throw IllegalStateException("Inicia sesión para ver tu credencial")
+                        verified = true
+                    }
                     catch (t: Exception) { error = t.message ?: "No se puede contactar la API" }
                     finally { busy = false }
                 }
@@ -91,7 +97,7 @@ class MainActivity : ComponentActivity() {
                 syncProfile(item.slug)
             }
             LaunchedEffect(url, refreshKey) {
-                if (page == "home" && url.startsWith("https://")) syncProfile(employee.slug)
+                if (page == "home" && role.isNotBlank() && url.startsWith("https://")) syncProfile(employee.slug)
             }
 
             MaterialTheme(colorScheme = lightColorScheme(primary = Forest, secondary = Leaf, background = Light, surface = Color.White)) {
@@ -110,8 +116,8 @@ class MainActivity : ComponentActivity() {
                     },
                     bottomBar = {
                         NavigationBar(containerColor = Color.White) {
-                            NavigationBarItem(selected = page == "home", onClick = { page = "home"; if (url.isNotBlank()) syncProfile(employee.slug) }, icon = { Icon(Icons.Default.Badge, null) }, label = { Text("Credencial") })
-                            NavigationBarItem(selected = page in listOf("login","directory","editor"), onClick = { page = if (loggedIn) "directory" else "login"; if (loggedIn) syncDirectory() }, icon = { Icon(Icons.Default.SupervisorAccount, null) }, label = { Text("Administración") })
+                            NavigationBarItem(selected = page == "home", onClick = { if (role.isBlank()) page = "login" else { page = "home"; syncProfile(employee.slug) } }, icon = { Icon(Icons.Default.Badge, null) }, label = { Text("Credencial") })
+                            NavigationBarItem(selected = page in listOf("login","directory","editor","account","activation"), onClick = { page = if (role == "admin") "directory" else if (role == "employee") "account" else "login"; if (role == "admin") syncDirectory() }, icon = { Icon(if (role == "employee") Icons.Default.Person else Icons.Default.SupervisorAccount, null) }, label = { Text(if (role == "employee") "Mi cuenta" else if (role == "admin") "Administración" else "Acceso") })
                         }
                     }
                 ) { padding ->
@@ -126,7 +132,7 @@ class MainActivity : ComponentActivity() {
                         }
                         if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
                         when (page) {
-                            "home" -> CredentialScreen(employee, verified, apiOrigin,
+                            "home" -> if (role.isNotBlank()) CredentialScreen(employee, verified, apiOrigin,
                                 onRefresh = { syncProfile(employee.slug) },
                                 onShare = { link -> startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply { type="text/plain"; putExtra(Intent.EXTRA_TEXT, link) }, "Compartir credencial")) },
                                 onSaveContact = { e ->
@@ -141,26 +147,65 @@ class MainActivity : ComponentActivity() {
                             "login" -> LoginScreen(onLogin = { email, password ->
                                 scope.launch {
                                     busy = true;error = ""
-                                    try { api.login(email,password); loggedIn = true; page = "directory"; syncDirectory() }
+                                    try { val session=api.login(email,password); role=session.role; loggedIn=role=="admin"; if (role=="admin") { page="directory"; syncDirectory() } else { employee=session.employee ?: api.myCredential(); verified=true; page="home" } }
                                     catch (t:Exception){error = t.message ?: "Error de inicio de sesión"}
                                     finally {busy=false}
                                 }
+                            }, onActivate = { page = "activation" })
+                            "activation" -> ActivationScreen(onBack = { page = "login" }, onActivate = { email, code, password ->
+                                scope.launch {
+                                    busy=true; error=""
+                                    try { api.activate(email,code,password); page="login"; error="Cuenta activada. Ahora inicia sesión con tu correo y contraseña." }
+                                    catch(t:Exception){error=t.message?:"Error al activar cuenta"}
+                                    finally { busy=false }
+                                }
                             })
-                            "directory" -> DirectoryScreen(employees, onReload = ::syncDirectory,
+                            "account" -> if(role=="employee") AccountScreen(
+                                email=employee.email,
+                                onChangePassword={current,newPassword ->
+                                    scope.launch {
+                                        busy=true; error=""
+                                        try { api.changePassword(current,newPassword); role=""; verified=false; employee=Employee(); page="login"; error="Contraseña cambiada. Inicia sesión nuevamente." }
+                                        catch(t:Exception){error=t.message?:"No se pudo cambiar la contraseña"}
+                                        finally {busy=false}
+                                    }
+                                },
+                                onLogout={scope.launch{try{api.logout()}catch(_:Exception){};role="";loggedIn=false;verified=false;employee=Employee();page="login"}}
+                            ) else LoginScreen(onLogin={_,_->},onActivate={page="activation"})
+                            "directory" -> if(role=="admin") DirectoryScreen(employees, onReload = ::syncDirectory,
                                 onNew = { editing = Employee(); page = "editor" },
                                 onEdit = { editing = it; page = "editor" },
                                 onOpen = { openProfile(it) },
                                 onActive = { e,active -> scope.launch { busy=true;error="";try { api.changeActive(e, active); syncDirectory() } catch(t:Exception){error=t.message ?: "No se pudo actualizar"} finally {busy=false} } },
-                                onLogout = { scope.launch { try { api.logout() } catch(_:Exception){}; loggedIn=false; page="login" } })
-                            "editor" -> EmployeeEditor(editing, onCancel={page="directory"}, onSave={ e ->
+                                onInvite = { e -> scope.launch {busy=true;error="";try { invitation=api.inviteEmployee(e) } catch(t:Exception){error=t.message?:"Error al crear acceso"} finally {busy=false}} },
+                                onLogout = { scope.launch { try { api.logout() } catch(_:Exception){}; role=""; loggedIn=false; verified=false; employee=Employee(); employees=emptyList(); page="login" } })
+                            else LoginScreen(onLogin={_,_->},onActivate={page="activation"})
+                            "editor" -> if(role=="admin") EmployeeEditor(editing, onCancel={page="directory"}, onSave={ e ->
                                 scope.launch { busy=true; error=""; try { api.save(e);page="directory";syncDirectory() } catch(t:Exception){error=t.message ?: "No se pudo guardar"} finally {busy=false} }
-                            })
+                            }) else LoginScreen(onLogin={_,_->},onActivate={page="activation"})
                             "settings" -> SettingsScreen(url, { url = it }, onSave = {
                                 preferences.edit().putString("api_url",url.trimEnd('/')).apply()
                                 refreshKey++ ;page="home"
                             }, onBack={page="home"}, nfcSupported = NfcAdapter.getDefaultAdapter(this@MainActivity) != null)
                         }
                     }
+                }
+                invitation?.let { invite ->
+                    AlertDialog(
+                        onDismissRequest={invitation=null},
+                        title={Text("Activación de empleado")},
+                        text={
+                            Column(verticalArrangement=Arrangement.spacedBy(10.dp)) {
+                                Text("Correo: ${invite.email}")
+                                Text("Comparte el código de activación por un canal privado. Vence en 24 horas y solo sirve una vez.")
+                                androidx.compose.foundation.text.selection.SelectionContainer {
+                                    Text(invite.code, fontWeight=FontWeight.Bold)
+                                }
+                                Text("El empleado abre Acceso → Activar cuenta e introduce su correo, este código y una contraseña nueva.")
+                            }
+                        },
+                        confirmButton={TextButton(onClick={invitation=null}){Text("Cerrar")}}
+                    )
                 }
             }
         }
