@@ -187,22 +187,109 @@ class MainActivity : ComponentActivity() {
                                     error = "Enlace configurado para lectores NFC compatibles. No funciona con todos los teléfonos."
                                 }
                             )
-                            "login" -> LoginScreen(onLogin = { email, password ->
-                                scope.launch {
-                                    busy = true;error = ""
-                                    try { api.login(email,password); loggedIn = true; page = "directory"; syncDirectory() }
-                                    catch (t:Exception){error = t.message ?: "Error de inicio de sesión"}
-                                    finally {busy=false}
-                                }
-                            })
-                            "directory" -> DirectoryScreen(employees, onReload = ::syncDirectory,
+                            "login" -> LoginScreen(
+                                onLogin = { email, password ->
+                                    scope.launch {
+                                        busy = true; error = ""; notice = ""
+                                        try {
+                                            val session = api.login(email, password)
+                                            role = session.role
+                                            loggedIn = session.role == "admin"
+                                            if (session.role == "admin") {
+                                                page = "directory"; syncDirectory()
+                                            } else {
+                                                employee = api.myCredential()
+                                                verified = employee.active
+                                                page = "home"
+                                            }
+                                        } catch (t: Exception) {
+                                            role = null; loggedIn = false
+                                            error = t.message ?: "No se pudo iniciar sesión"
+                                        } finally { busy = false }
+                                    }
+                                },
+                                onActivate = { page = "activate"; error = ""; notice = "" }
+                            )
+                            "activate" -> ActivationScreen(
+                                onActivate = { email, code, password ->
+                                    scope.launch {
+                                        busy = true; error = ""
+                                        try {
+                                            api.activate(email, code, password)
+                                            page = "login"
+                                            notice = "Cuenta activada. Ahora inicia sesión con tu correo y contraseña."
+                                        } catch (t: Exception) {
+                                            error = t.message ?: "No se pudo activar la cuenta"
+                                        } finally { busy = false }
+                                    }
+                                },
+                                onBack = { page = "login" }
+                            )
+                            "password" -> if (role == "employee") ChangePasswordScreen(
+                                onChange = { current, updated ->
+                                    scope.launch {
+                                        busy = true; error = ""
+                                        try {
+                                            api.changePassword(current, updated)
+                                            role = null; employee = Employee(); verified = false
+                                            page = "login"
+                                            notice = "Contraseña actualizada. Inicia sesión nuevamente."
+                                        } catch (t: Exception) {
+                                            error = t.message ?: "No se pudo cambiar la contraseña"
+                                        } finally { busy = false }
+                                    }
+                                },
+                                onBack = { page = "home" }
+                            )
+                            "directory" -> if (role == "admin") DirectoryScreen(
+                                employees,
+                                onReload = ::syncDirectory,
                                 onNew = { editing = Employee(); page = "editor" },
                                 onEdit = { editing = it; page = "editor" },
                                 onOpen = { openProfile(it) },
-                                onActive = { e,active -> scope.launch { busy=true;error="";try { api.changeActive(e, active); syncDirectory() } catch(t:Exception){error=t.message ?: "No se pudo actualizar"} finally {busy=false} } },
-                                onLogout = { scope.launch { try { api.logout() } catch(_:Exception){}; loggedIn=false; page="login" } })
-                            "editor" -> EmployeeEditor(editing, onCancel={page="directory"}, onSave={ e ->
-                                scope.launch { busy=true; error=""; try { api.save(e);page="directory";syncDirectory() } catch(t:Exception){error=t.message ?: "No se pudo guardar"} finally {busy=false} }
+                                onActive = { e, active ->
+                                    scope.launch {
+                                        busy = true; error = ""
+                                        try { api.changeActive(e, active); syncDirectory() }
+                                        catch (t: Exception) { error = t.message ?: "No se pudo actualizar" }
+                                        finally { busy = false }
+                                    }
+                                },
+                                onInvite = { e ->
+                                    scope.launch {
+                                        busy = true; error = ""
+                                        try {
+                                            val invitation = api.invite(e)
+                                            val text = "Alsama Digital ID — activación de cuenta\n" +
+                                                "Correo: ${invitation.email}\n" +
+                                                "Código de activación (24 horas): ${invitation.activationCode}\n" +
+                                                "Abre la app, selecciona Activar mi cuenta y crea tu propia contraseña."
+                                            startActivity(Intent.createChooser(
+                                                Intent(Intent.ACTION_SEND).apply {
+                                                    type = "text/plain"
+                                                    putExtra(Intent.EXTRA_TEXT, text)
+                                                }, "Compartir invitación de forma privada"
+                                            ))
+                                        } catch (t: Exception) {
+                                            error = t.message ?: "No se pudo generar la invitación"
+                                        } finally { busy = false }
+                                    }
+                                },
+                                onLogout = {
+                                    scope.launch {
+                                        try { api.logout() } catch (_: Exception) {}
+                                        role = null; loggedIn = false
+                                        employee = Employee(); verified = false; page = "login"
+                                    }
+                                }
+                            )
+                            "editor" -> if (role == "admin") EmployeeEditor(editing, onCancel = { page = "directory" }, onSave = { e ->
+                                scope.launch {
+                                    busy = true; error = ""
+                                    try { api.save(e); page = "directory"; syncDirectory() }
+                                    catch (t: Exception) { error = t.message ?: "No se pudo guardar" }
+                                    finally { busy = false }
+                                }
                             })
                             "settings" -> SettingsScreen(url, { url = it }, onSave = {
                                 preferences.edit().putString("api_url",url.trimEnd('/')).apply()
