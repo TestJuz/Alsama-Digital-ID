@@ -119,6 +119,23 @@ else if(method==='GET'&&p==='/v1/me'){
  if(!staff)return error(401,'unauthorized','Inicia sesión para ver tu credencial');
  response=json({role:admin?'admin':'employee',isAdmin:Boolean(admin),employee:employee(staff)});
 }
+else if(method==='POST'&&p==='/v1/auth/refresh'){
+ const v=await body(req);
+ if(typeof v.refreshToken!=='string'||!/^[a-f0-9]{64}$/i.test(v.refreshToken))return error(401,'invalid_session','Sesión caducada');
+ const oldHash=await sha(v.refreshToken),row=await env.DB.prepare('SELECT token_hash,actor_type,actor_id,expires_at FROM refresh_sessions WHERE token_hash=? AND expires_at>?').bind(oldHash,now()).first();
+ if(!row)return error(401,'invalid_session','Sesión caducada');
+ const actor=row.actor_type==='admin'?
+   await env.DB.prepare('SELECT admins.id,admins.email FROM admins LEFT JOIN employees e ON lower(e.email)=lower(admins.email) WHERE admins.id=? AND (e.id IS NULL OR e.active=1)').bind(row.actor_id).first():
+   await env.DB.prepare('SELECT id,email FROM employees WHERE id=? AND active=1 AND profile_type!=?').bind(row.actor_id,'driver').first();
+ if(!actor){await env.DB.prepare('DELETE FROM refresh_sessions WHERE token_hash=?').bind(oldHash).run();return error(401,'invalid_session','Cuenta sin acceso');}
+ const newToken=rand(),newExpiration=new Date(Date.now()+90*86400000).toISOString();
+ const result=await env.DB.prepare('UPDATE refresh_sessions SET token_hash=?,expires_at=?,updated_at=? WHERE token_hash=? AND expires_at>?').bind(await sha(newToken),newExpiration,now(),oldHash,now()).run();
+ if(!result.meta?.changes)return error(401,'invalid_session','Sesión ya renovada');
+ const admin=row.actor_type==='admin';
+ const session=await issueSession(env,admin?'sessions':'employee_sessions',actor.id,admin?'admin':'employee');
+ const profile=admin?await env.DB.prepare('SELECT '+select+' FROM employees WHERE lower(email)=? AND active=1').bind(actor.email.toLowerCase()).first():await env.DB.prepare('SELECT '+select+' FROM employees WHERE id=?').bind(actor.id).first();
+ response=json({...session,refreshToken:newToken,refreshExpiresAt:newExpiration,isAdmin:admin,employee:profile?employee(profile):null});
+}
 else if(method==='POST'&&p==='/v1/auth/change-password'){
  const admin=await auth(req,env);
  const staff=admin?null:await employeeAuth(req,env);
@@ -133,20 +150,36 @@ else if(method==='POST'&&p==='/v1/auth/change-password'){
  if(admin){
    await env.DB.prepare('UPDATE admins SET password_hash=?,password_salt=? WHERE id=?').bind(hashed,salt,admin.id).run();
    await env.DB.prepare('DELETE FROM sessions WHERE admin_id=?').bind(admin.id).run();
+   await env.DB.prepare('DELETE FROM refresh_sessions WHERE actor_type=? AND actor_id=?').bind('admin',admin.id).run();
  }else{
    await env.DB.prepare('UPDATE employee_credentials SET password_hash=?,password_salt=?,updated_at=? WHERE employee_id=?').bind(hashed,salt,now(),staff.id).run();
    await env.DB.prepare('DELETE FROM employee_sessions WHERE employee_id=?').bind(staff.id).run();
+   await env.DB.prepare('DELETE FROM refresh_sessions WHERE actor_type=? AND actor_id=?').bind('employee',staff.id).run();
  }
  response=json({changed:true,reauthenticate:true});
 }
 else if(method==='POST'&&p==='/v1/auth/logout'){
+ // Explicit logout also revokes persisted refresh credentials. A session may be
+ // expired at logout time, so a valid refresh credential alone is enough.
+ const v=await body(req);
+ const refreshToken=typeof v.refreshToken==='string'&&/^[a-f0-9]{64}$/i.test(v.refreshToken)?v.refreshToken:null;
  const token=req.headers.get('Authorization')?.match(/^Bearer ([a-fA-F0-9]{64})$/)?.[1];
- if(!token)return error(401,'unauthorized','Authentication required');
- const h=await sha(token);
- const a=await auth(req,env),e=await employeeAuth(req,env);
- if(!a&&!e)return error(401,'unauthorized','Authentication required');
- await env.DB.prepare('DELETE FROM sessions WHERE token_hash=?').bind(h).run();
- await env.DB.prepare('DELETE FROM employee_sessions WHERE token_hash=?').bind(h).run();
+ if(!refreshToken&&!token)return error(401,'unauthorized','Authentication required');
+ let cleared=false;
+ if(refreshToken){
+   const del=await env.DB.prepare('DELETE FROM refresh_sessions WHERE token_hash=?').bind(await sha(refreshToken)).run();
+   cleared=Boolean(del.meta?.changes);
+ }
+ if(token){
+   const h=await sha(token);
+   const a=await auth(req,env),e=await employeeAuth(req,env);
+   if(a||e){
+     await env.DB.prepare('DELETE FROM sessions WHERE token_hash=?').bind(h).run();
+     await env.DB.prepare('DELETE FROM employee_sessions WHERE token_hash=?').bind(h).run();
+     cleared=true;
+   }
+ }
+ if(!cleared)return error(401,'unauthorized','Session invalid');
  response=json({loggedOut:true});
 }
 else if(p.startsWith('/v1/admin/')){const a=await auth(req,env);if(!a)return error(401,'unauthorized','Authentication required');if(p==='/v1/admin/employees'&&method==='GET'){const r=await env.DB.prepare('SELECT '+select+' FROM employees ORDER BY full_name').all();response=json({employees:r.results.map(employee)})}
@@ -179,7 +212,7 @@ else if(method==='POST'&&/^\/v1\/admin\/employees\/[0-9a-f-]+\/invite$/.test(p))
  response=json({email:staff.email,activationCode:code,expiresAt:expiration});
 }
 else{const match=/^\/v1\/admin\/employees\/([0-9a-f-]+)(\/status)?$/.exec(p);if(!match||!uuidRe.test(match[1]))return error(404,'not_found','Resource not found');const id=match[1],old=await env.DB.prepare('SELECT '+select+' FROM employees WHERE id=?').bind(id).first();if(!old)return error(404,'not_found','Employee not found');if(method==='GET'&&!match[2])response=json({employee:employee(old)});
-else if(method==='PATCH'&&match[2]){const v=await body(req);if(Object.keys(v).length!==1||typeof v.active!=='boolean')return error(422,'validation_error','active must be boolean');await env.DB.prepare('UPDATE employees SET active=?,updated_at=? WHERE id=?').bind(v.active?1:0,now(),id).run();response=json({employee:employee(await env.DB.prepare('SELECT '+select+' FROM employees WHERE id=?').bind(id).first())})}
+else if(method==='PATCH'&&match[2]){const v=await body(req);if(Object.keys(v).length!==1||typeof v.active!=='boolean')return error(422,'validation_error','active must be boolean');await env.DB.prepare('UPDATE employees SET active=?,updated_at=? WHERE id=?').bind(v.active?1:0,now(),id).run();if(!v.active){await env.DB.prepare('DELETE FROM employee_sessions WHERE employee_id=?').bind(id).run();await env.DB.prepare('DELETE FROM refresh_sessions WHERE actor_type=? AND actor_id=?').bind('employee',id).run();}response=json({employee:employee(await env.DB.prepare('SELECT '+select+' FROM employees WHERE id=?').bind(id).first())})}
 else if(method==='PUT'&&!match[2]){
  const v=await body(req);
  if(v.profileType&&v.profileType!==old.profile_type)return error(409,'immutable_profile_type','El tipo de perfil no se puede cambiar después de crearlo');
@@ -201,7 +234,7 @@ else if(method==='PUT'&&!match[2]){
 }
 else return error(405,'method_not_allowed','Method not allowed')}}
 else{const m=/^\/v1\/public\/staff\/([a-z0-9-]+)(\/contact\.vcf)?$/.exec(p),card=/^\/p\/([a-z0-9-]+)$/.exec(p);if(method!=='GET'||(!m&&!card))return error(404,'not_found','Resource not found');const slug=(m||card)[1];if(!slugRe.test(slug))return error(404,'not_found','Resource not found');const r=await env.DB.prepare('SELECT '+select+' FROM employees WHERE slug=? AND active=1').bind(slug).first();if(!r||!r.public_visible)return error(404,'not_found','Employee not found');if(m&&!m[2])response=json(publicEmployee(r));
-else if(m&&m[2]){if(!r.public_visible)return error(404,'not_found','Contact not publicly available');const lines=['BEGIN:VCARD','VERSION:3.0','FN:'+vcf(r.full_name),'ORG:Alsama Tours Costa Rica','TITLE:'+vcf(r.job_title),'EMAIL;TYPE=WORK:'+vcf(r.email),'TEL;TYPE=WORK:'+vcf(r.phone),'END:VCARD'];response=new Response(lines.join('\r\n')+'\r\n',{headers:{...headers,'Content-Type':'text/vcard; charset=utf-8','Content-Disposition':'attachment; filename="contact.vcf"'}})}
-else{const publicLink='/v1/public/staff/'+encodeURIComponent(slug)+'/contact.vcf';const contact=r.public_visible?'<p><a href="mailto:'+esc(r.email)+'">'+esc(r.email)+'</a></p><p><a href="tel:'+esc(r.phone)+'">'+esc(r.phone)+'</a></p><p><a href="'+publicLink+'">Guardar contacto</a></p>':'';const html='<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>'+esc(r.full_name)+' | Alsama</title><style>body{font:16px system-ui;background:#eef4f4;display:grid;place-items:center;min-height:100vh;margin:0}main{background:white;padding:2rem;border-radius:20px;max-width:420px;width:80%;text-align:center;box-shadow:0 8px 30px #0001}img{width:120px;height:120px;object-fit:cover;border-radius:50%}a{color:#006a63}</style></head><body><main>'+(r.photo_url?'<img alt="Fotografía de empleado" src="'+esc(r.photo_url)+'">':'')+'<h1>'+esc(r.full_name)+'</h1><p>'+esc(r.job_title)+'</p><p>Alsama Tours Costa Rica</p>'+contact+'</main></body></html>';response=new Response(html,{headers:{...headers,'Content-Type':'text/html; charset=utf-8','Content-Security-Policy':"default-src 'none'; style-src 'unsafe-inline'; img-src https:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"}})}}
+else if(m&&m[2]){if(!r.public_visible)return error(404,'not_found','Contact not publicly available');const lines=['BEGIN:VCARD','VERSION:3.0','FN:'+vcf(r.full_name),'ORG:Alsama Tours Costa Rica','TITLE:'+vcf(r.job_title),'EMAIL;TYPE=WORK:'+vcf(publicContact(r).email),'TEL;TYPE=WORK:'+vcf(publicContact(r).phone),'END:VCARD'];response=new Response(lines.join('\r\n')+'\r\n',{headers:{...headers,'Content-Type':'text/vcard; charset=utf-8','Content-Disposition':'attachment; filename="contact.vcf"'}})}
+else{const publicLink='/v1/public/staff/'+encodeURIComponent(slug)+'/contact.vcf';const contact=r.public_visible?'<p><a href="mailto:'+esc(publicContact(r).email)+'">'+esc(publicContact(r).email)+'</a></p><p><a href="tel:'+esc(publicContact(r).phone)+'">'+esc(publicContact(r).phone)+'</a></p><p><a href="'+publicLink+'">Guardar contacto</a></p>':'';const html='<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>'+esc(r.full_name)+' | Alsama</title><style>body{font:16px system-ui;background:#eef4f4;display:grid;place-items:center;min-height:100vh;margin:0}main{background:white;padding:2rem;border-radius:20px;max-width:420px;width:80%;text-align:center;box-shadow:0 8px 30px #0001}img{width:120px;height:120px;object-fit:cover;border-radius:50%}a{color:#006a63}.social{display:flex;gap:10px;flex-wrap:wrap;justify-content:center;margin-top:20px}.social a{padding:10px 13px;background:#edf7f4;border-radius:10px;text-decoration:none;font-weight:600}</style></head><body><main>'+(r.photo_url?'<img alt="Fotografía de empleado" src="'+esc(r.photo_url)+'">':'')+'<h1>'+esc(r.full_name)+'</h1><p>'+esc(r.job_title)+'</p><p>Alsama Tours Costa Rica</p>'+contact+'<nav class="social" aria-label="Enlaces de Alsama"><a href="https://www.instagram.com/alsama_tours_cr/" target="_blank" rel="noopener noreferrer">Instagram</a><a href="https://www.facebook.com/AlsamaToursCR" target="_blank" rel="noopener noreferrer">Facebook</a><a href="https://alsamatourscr.com/" target="_blank" rel="noopener noreferrer">Sitio web</a></nav>'+'</main></body></html>';response=new Response(html,{headers:{...headers,'Content-Type':'text/html; charset=utf-8','Content-Security-Policy':"default-src 'none'; style-src 'unsafe-inline'; img-src https:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"}})}}
 if(origin&&origin===corsOrigin){response.headers.set('Access-Control-Allow-Origin',origin);response.headers.set('Vary','Origin')}return response}
 export default {async fetch(req,env){try{return await main(req,env)}catch(e){if(Array.isArray(e))return error(e[0],e[1],e[1]);console.error('Request failed',e?.message);return error(500,'internal_error','Internal server error')}}};
