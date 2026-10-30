@@ -373,21 +373,83 @@ private fun QrCode(content:String){
 }
 
 @Composable
-private fun LoginScreen(onLogin:(String,String)->Unit) {
-    var email by remember { mutableStateOf("") };var password by remember { mutableStateOf("") }
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),verticalArrangement=Arrangement.spacedBy(18.dp)) {
-        Icon(Icons.Default.AdminPanelSettings, null, tint=Forest,modifier=Modifier.size(48.dp))
-        Text("Acceso administrativo",fontSize=25.sp,fontWeight=FontWeight.Bold,color=Forest)
-        Text("Solo personal autorizado puede administrar empleados.",color=Leaf)
-        OutlinedTextField(email,{email=it},label={Text("Correo administrador")},singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Email),modifier=Modifier.fillMaxWidth())
-        OutlinedTextField(password,{password=it},label={Text("Contraseña")},singleLine=true,visualTransformation=PasswordVisualTransformation(),modifier=Modifier.fillMaxWidth())
-        Button(onClick={onLogin(email,password)},enabled=email.contains("@")&&password.isNotBlank(),modifier=Modifier.fillMaxWidth()){ Text("Iniciar sesión") }
-        Text("La cuenta administrativa se configura en Cloudflare, no está integrada en el APK.",fontSize=12.sp,color=Leaf)
+private fun LoginScreen(onLogin: (String, String) -> Unit, onActivate: () -> Unit) {
+    var email by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
+        verticalArrangement = Arrangement.spacedBy(18.dp)) {
+        Icon(Icons.Default.LockPerson, null, tint = Forest, modifier = Modifier.size(48.dp))
+        Text("Iniciar sesión", fontSize = 25.sp, fontWeight = FontWeight.Bold, color = Forest)
+        Text("Usa el correo asociado a tu registro de empleado. Verás solamente tu propia credencial. Los administradores pueden gestionar el personal.", color = Leaf)
+        OutlinedTextField(email, { email = it }, label = { Text("Correo electrónico") },
+            singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+            modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(password, { password = it }, label = { Text("Contraseña") },
+            singleLine = true, visualTransformation = PasswordVisualTransformation(),
+            modifier = Modifier.fillMaxWidth())
+        Button(onClick = { onLogin(email, password) },
+            enabled = email.contains("@") && password.isNotBlank(),
+            modifier = Modifier.fillMaxWidth()) { Text("Iniciar sesión") }
+        OutlinedButton(onClick = onActivate, modifier = Modifier.fillMaxWidth()) {
+            Text("Activar mi cuenta por primera vez")
+        }
+        Text("Para activar tu cuenta, solicita al administrador un código de invitación. No se envía automáticamente por correo.", fontSize = 12.sp, color = Leaf)
     }
 }
 
 @Composable
-private fun DirectoryScreen(employees:List<Employee>, onReload:()->Unit, onNew:()->Unit,onEdit:(Employee)->Unit,onOpen:(Employee)->Unit,onActive:(Employee,Boolean)->Unit,onLogout:()->Unit) {
+private fun ActivationScreen(onActivate: (String, String, String) -> Unit, onBack: () -> Unit) {
+    var email by remember { mutableStateOf("") }
+    var code by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    var confirm by remember { mutableStateOf("") }
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
+        verticalArrangement = Arrangement.spacedBy(15.dp)) {
+        Text("Activar cuenta de empleado", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Forest)
+        Text("Introduce el correo registrado por Alsama y el código temporal que te facilitó el administrador.", color = Leaf)
+        OutlinedTextField(email, { email = it }, label = { Text("Correo registrado") },
+            singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+            modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(code, { code = it.trim() }, label = { Text("Código de activación") },
+            singleLine = true, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(password, { password = it }, label = { Text("Crear contraseña (mínimo 14 caracteres)") },
+            singleLine = true, visualTransformation = PasswordVisualTransformation(),
+            modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(confirm, { confirm = it }, label = { Text("Confirmar contraseña") },
+            singleLine = true, visualTransformation = PasswordVisualTransformation(),
+            modifier = Modifier.fillMaxWidth())
+        if (confirm.isNotEmpty() && confirm != password) Text("Las contraseñas no coinciden.", color = Color.Red)
+        Button(onClick = { onActivate(email, code, password) },
+            enabled = email.contains("@") && code.length >= 32 && password.length in 14..128 && password == confirm,
+            modifier = Modifier.fillMaxWidth()) { Text("Activar cuenta") }
+        OutlinedButton(onClick = onBack, modifier = Modifier.fillMaxWidth()) { Text("Volver") }
+    }
+}
+
+@Composable
+private fun ChangePasswordScreen(onChange: (String, String) -> Unit, onBack: () -> Unit) {
+    var current by remember { mutableStateOf("") }
+    var next by remember { mutableStateOf("") }
+    var confirm by remember { mutableStateOf("") }
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        Text("Cambiar contraseña", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Forest)
+        OutlinedTextField(current, { current = it }, label = { Text("Contraseña actual") },
+            visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(next, { next = it }, label = { Text("Nueva contraseña (mínimo 14 caracteres)") },
+            visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(confirm, { confirm = it }, label = { Text("Confirmar nueva contraseña") },
+            visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+        if (confirm.isNotEmpty() && next != confirm) Text("Las contraseñas no coinciden.", color = Color.Red)
+        Button(onClick = { onChange(current, next) },
+            enabled = current.isNotBlank() && next.length in 14..128 && next == confirm && next != current,
+            modifier = Modifier.fillMaxWidth()) { Text("Guardar nueva contraseña") }
+        OutlinedButton(onClick = onBack, modifier = Modifier.fillMaxWidth()) { Text("Cancelar") }
+    }
+}
+
+@Composable
+private fun DirectoryScreen(employees:List<Employee>, onReload:()->Unit, onNew:()->Unit,onEdit:(Employee)->Unit,onOpen:(Employee)->Unit,onActive:(Employee,Boolean)->Unit,onInvite:(Employee)->Unit,onLogout:()->Unit) {
     Column(Modifier.fillMaxSize().padding(16.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
         Row(verticalAlignment=Alignment.CenterVertically){Text("Empleados",fontSize=26.sp,fontWeight=FontWeight.Bold,color=Forest,modifier=Modifier.weight(1f));IconButton(onClick=onReload){Icon(Icons.Default.Refresh,"Actualizar")};IconButton(onClick=onLogout){Icon(Icons.Default.Logout,"Salir")}}
         Button(onClick=onNew,modifier=Modifier.fillMaxWidth()){Icon(Icons.Default.Add,null);Spacer(Modifier.width(8.dp));Text("Agregar empleado")}
@@ -402,6 +464,7 @@ private fun DirectoryScreen(employees:List<Employee>, onReload:()->Unit, onNew:(
                         Row(verticalAlignment=Alignment.CenterVertically){
                             TextButton(onClick={onEdit(e)}){Text("Editar")}
                             TextButton(onClick={onOpen(e)}){Text("Credencial")}
+                            TextButton(onClick={onInvite(e)},enabled=e.active){Text("Generar acceso")}
                             Spacer(Modifier.weight(1f))
                             Switch(checked=e.active,onCheckedChange={onActive(e,it)})
                         }
