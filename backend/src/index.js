@@ -62,7 +62,7 @@ else if(method==='POST'&&p==='/v1/auth/login'){
  await env.DB.prepare('DELETE FROM login_attempts WHERE key=?').bind(key).run();
  const isAdmin=Boolean(admin);
  const session=await issueSession(env,isAdmin?'sessions':'employee_sessions',(admin||staff).id,isAdmin?'admin':'employee');
- response=json({...session,isAdmin,employee:profile?employee(profile):employee(staff),...(isAdmin?{admin:{id:admin.id,email:admin.email}}:{})});
+ response=json({...session,isAdmin,employee:profile?employee(profile):(staff?employee(staff):null),...(isAdmin?{admin:{id:admin.id,email:admin.email}}:{})});
 }
 else if(method==='POST'&&p==='/v1/auth/activate'){
  const v=await body(req);
