@@ -10,6 +10,9 @@ import java.net.URL
 
 class ApiException(val status: Int, message: String) : Exception(message)
 
+data class AuthSession(val role: String, val employee: Employee?)
+data class InvitationCode(val email: String, val code: String, val expiresAt: String)
+
 /** No credential is persisted to disk. App restart requires re-authentication. */
 class ApiClient(private val urlProvider: () -> String) {
     var accessToken: String? = null
@@ -49,10 +52,33 @@ class ApiClient(private val urlProvider: () -> String) {
     suspend fun publicStaff(slug: String): Employee = request("/v1/public/staff/${encode(slug)}").let {
         Employee.fromJson(it.optJSONObject("employee") ?: it)
     }
-    suspend fun login(email: String, password: String) {
+    suspend fun login(email: String, password: String): AuthSession {
         val response = request("/v1/auth/login", "POST", JSONObject().put("email", email.trim()).put("password", password))
-        accessToken = response.optString("accessToken").ifBlank { response.optString("token") }
-        if (accessToken.isNullOrBlank()) throw ApiException(500, "El servidor no devolvió una sesión válida.")
+        val token = response.optString("accessToken").ifBlank { response.optString("token") }
+        val role = response.optString("role")
+        if (token.isBlank() || role !in listOf("admin", "employee")) throw ApiException(500, "El servidor no devolvió una sesión válida.")
+        accessToken = token
+        val person = response.optJSONObject("employee")?.let(Employee::fromJson)
+        return AuthSession(role, person)
+    }
+    suspend fun myCredential(): Employee =
+        request("/v1/me", authenticated = true).let { Employee.fromJson(it.getJSONObject("employee")) }
+
+    suspend fun activate(email: String, activationCode: String, password: String) {
+        request("/v1/auth/activate", "POST", JSONObject()
+            .put("email", email.trim())
+            .put("code", activationCode.trim())
+            .put("password", password))
+    }
+    suspend fun inviteEmployee(employee: Employee): InvitationCode {
+        val res = request("/v1/admin/employees/${encode(employee.id)}/invite", "POST", JSONObject(), true)
+        return InvitationCode(res.getString("email"), res.getString("activationCode"), res.getString("expiresAt"))
+    }
+    suspend fun changePassword(currentPassword: String, newPassword: String) {
+        request("/v1/auth/change-password", "POST", JSONObject()
+            .put("currentPassword", currentPassword)
+            .put("newPassword", newPassword), true)
+        accessToken = null
     }
     suspend fun logout() {
         try { request("/v1/auth/logout", "POST", JSONObject(), true) } finally { accessToken = null }
