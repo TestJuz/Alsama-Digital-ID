@@ -6,6 +6,9 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
+import android.os.SystemClock
+import android.widget.Toast
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -51,7 +54,7 @@ private val Leaf = Color(0xFF327453)
 
 class MainActivity : ComponentActivity() {
     private val preferences by lazy { getSharedPreferences("alsama_config", MODE_PRIVATE) }
-    private val api by lazy { ApiClient() }
+    private val api by lazy { ApiClient(applicationContext) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -69,8 +72,39 @@ class MainActivity : ComponentActivity() {
             var loggedIn by remember { mutableStateOf(false) }
             var error by remember { mutableStateOf("") }
             var busy by remember { mutableStateOf(false) }
+            var lastBackAt by remember { mutableLongStateOf(0L) }
             val scope = rememberCoroutineScope()
             val apiOrigin = BuildConfig.API_BASE_URL.trimEnd('/')
+            LaunchedEffect(Unit) {
+                try {
+                    val session=api.restoreSession()
+                    if(session!=null) {
+                        role=if(session.isAdmin) "admin" else "employee"
+                        loggedIn=session.isAdmin
+                        ownProfile=session.employee
+                        employee=session.employee ?: Employee()
+                        signedInEmail=session.email
+                        verified=session.employee!=null
+                        page=if(session.employee!=null) "home" else if(session.isAdmin) "directory" else "login"
+                    }
+                }catch(_:Exception){ /* Keep encrypted refresh token for the next online attempt. */ }
+            }
+            BackHandler(enabled=role.isNotBlank() || page=="activation") {
+                val tick=SystemClock.elapsedRealtime()
+                if(role.isBlank()){page="login";lastBackAt=0L}
+                else if(page!="home" && ownProfile!=null){
+                    employee=ownProfile!!
+                    verified=true
+                    page="home"
+                    lastBackAt=tick
+                }else if(tick-lastBackAt in 0..2500 && lastBackAt!=0L){
+                    finish()
+                }else{
+                    if(ownProfile!=null){employee=ownProfile!!;page="home";verified=true}
+                    lastBackAt=tick
+                    Toast.makeText(this@MainActivity,"Pulsa Atrás otra vez para salir",Toast.LENGTH_SHORT).show()
+                }
+            }
 
             fun syncProfile(slug: String = "sebastian-melendez-rodriguez") {
                 scope.launch {
@@ -149,7 +183,7 @@ class MainActivity : ComponentActivity() {
                                         val session=api.login(email,password)
                                         role=if(session.isAdmin) "admin" else "employee"
                                         loggedIn=session.isAdmin
-                                        signedInEmail=email.trim()
+                                        signedInEmail=session.email.ifBlank { email.trim() }
                                         ownProfile=session.employee
                                         employee=session.employee ?: Employee()
                                         verified=session.employee!=null
@@ -354,7 +388,7 @@ private fun DirectoryScreen(employees:List<Employee>, onReload:()->Unit, onNew:(
                         Row(verticalAlignment=Alignment.CenterVertically){
                             TextButton(onClick={onEdit(e)}){Text("Editar")}
                             TextButton(onClick={onOpen(e)}){Text("Credencial")}
-                            TextButton(onClick={onInvite(e)},enabled=e.active){Text("Crear acceso")}
+                            TextButton(onClick={onInvite(e)},enabled=e.active&&e.profileType!="driver"){Text("Crear acceso")}
                             Spacer(Modifier.weight(1f))
                             Switch(checked=e.active,onCheckedChange={onActive(e,it)})
                         }
@@ -367,6 +401,8 @@ private fun DirectoryScreen(employees:List<Employee>, onReload:()->Unit, onNew:(
 
 @Composable
 private fun EmployeeEditor(initial:Employee,onCancel:()->Unit,onSave:(Employee)->Unit){
+    val existing=initial.id.isNotBlank()
+    var profileType by remember(initial.id){mutableStateOf(initial.profileType.ifBlank{"sales"})}
     var name by remember(initial.id){mutableStateOf(initial.fullName)}
     var slug by remember(initial.id){mutableStateOf(initial.slug)}
     var job by remember(initial.id){mutableStateOf(initial.jobTitle)}
@@ -375,18 +411,51 @@ private fun EmployeeEditor(initial:Employee,onCancel:()->Unit,onSave:(Employee)-
     var photo by remember(initial.id){mutableStateOf(initial.photoUrl)}
     var active by remember(initial.id){mutableStateOf(initial.active)}
     var isPublic by remember(initial.id){mutableStateOf(initial.publicVisible)}
+    val driver=profileType=="driver"
+    val fixedTitle=when(profileType){"driver"->"Chofer";"admin"->"Administrador";"sales"->"Ejecutivo en ventas";else->job}
+    val canSave=name.trim().isNotEmpty()&&(driver||(
+       slug.matches(Regex("[a-z0-9-]+"))&&email.contains("@")&&phone.trim().isNotEmpty()&&fixedTitle.isNotEmpty()
+    ))
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),verticalArrangement=Arrangement.spacedBy(12.dp)){
-        Text(if(initial.id.isBlank()) "Nuevo empleado" else "Editar empleado",fontSize=25.sp,fontWeight=FontWeight.Bold,color=Forest)
-        OutlinedTextField(name,{name=it},label={Text("Nombre completo")},modifier=Modifier.fillMaxWidth())
-        OutlinedTextField(slug,{slug=it.lowercase().replace(" ", "-")},label={Text("Identificador (slug)")},modifier=Modifier.fillMaxWidth(),singleLine=true)
-        OutlinedTextField(job,{job=it},label={Text("Puesto")},modifier=Modifier.fillMaxWidth())
-        OutlinedTextField(email,{email=it},label={Text("Correo")},modifier=Modifier.fillMaxWidth(),keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Email))
-        OutlinedTextField(phone,{phone=it},label={Text("Teléfono")},modifier=Modifier.fillMaxWidth(),keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Phone))
-        OutlinedTextField(photo,{photo=it},label={Text("URL HTTPS de fotografía")},modifier=Modifier.fillMaxWidth())
-        Row(verticalAlignment=Alignment.CenterVertically){Text("Empleado activo",modifier=Modifier.weight(1f));Switch(active,{active=it})}
-        Row(verticalAlignment=Alignment.CenterVertically){Text("Contacto visible públicamente",modifier=Modifier.weight(1f));Switch(isPublic,{isPublic=it})}
-        Button(onClick={onSave(initial.copy(slug=slug,fullName=name,jobTitle=job,email=email,phone=phone,photoUrl=photo,active=active,publicVisible=isPublic))},
-            enabled=name.isNotBlank()&&job.isNotBlank()&&email.contains("@")&&slug.matches(Regex("[a-z0-9-]+")),modifier=Modifier.fillMaxWidth()){Text("Guardar cambios")}
+        Text(if(!existing) "Nuevo empleado" else "Editar empleado",fontSize=25.sp,fontWeight=FontWeight.Bold,color=Forest)
+        Text("Puesto",color=Forest,fontWeight=FontWeight.Bold)
+        val options=listOf("sales" to "Ejecutivo en ventas","driver" to "Chofer","admin" to "Administrador","other" to "Otros")
+        options.forEach{(type,label)->
+            Row(verticalAlignment=Alignment.CenterVertically,modifier=Modifier.fillMaxWidth()){
+                RadioButton(selected=profileType==type,onClick={
+                    if(!existing){profileType=type;if(type=="sales")job="Ejecutivo en ventas";if(type=="admin")job="Administrador";if(type=="driver")job="Chofer"}
+                },enabled=!existing)
+                Text(label,modifier=Modifier.clickable(enabled=!existing){
+                    profileType=type
+                    if(type=="sales")job="Ejecutivo en ventas"
+                    if(type=="admin")job="Administrador"
+                    if(type=="driver")job="Chofer"
+                })
+            }
+        }
+        if(existing) Text("El tipo de perfil se fija al crear el empleado.",fontSize=12.sp,color=Leaf)
+        OutlinedTextField(name,{name=it; if(!existing && profileType!="driver")slug=it.trim().lowercase().replace(Regex("[^a-z0-9]+"),"-").trim('-')},label={Text("Nombre completo")},modifier=Modifier.fillMaxWidth())
+        if(driver){
+            Text("Contacto de Chofer: +506 6167 2539 · info@alsamatourscr.com",color=Leaf)
+            Text("Este perfil solo pide el nombre; el correo corporativo se muestra en la credencial, pero no es una cuenta personal de acceso.",fontSize=12.sp,color=Leaf)
+        }else{
+            OutlinedTextField(slug,{slug=it.lowercase().replace(" ","-")},label={Text("Identificador (slug)")},modifier=Modifier.fillMaxWidth(),singleLine=true)
+            if(profileType=="other"){
+                OutlinedTextField(job,{job=it},label={Text("Puesto personalizado")},modifier=Modifier.fillMaxWidth())
+            }else{
+                Text("Puesto: $fixedTitle",color=Forest)
+            }
+            OutlinedTextField(email,{email=it},label={Text("Correo personal de acceso")},modifier=Modifier.fillMaxWidth(),keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Email))
+            OutlinedTextField(phone,{phone=it},label={Text("Teléfono")},modifier=Modifier.fillMaxWidth(),keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Phone))
+            OutlinedTextField(photo,{photo=it},label={Text("URL HTTPS de fotografía")},modifier=Modifier.fillMaxWidth())
+        }
+        if(!driver || existing) {
+            Row(verticalAlignment=Alignment.CenterVertically){Text("Empleado activo",modifier=Modifier.weight(1f));Switch(active,{active=it})}
+            Row(verticalAlignment=Alignment.CenterVertically){Text("Contacto visible públicamente",modifier=Modifier.weight(1f));Switch(isPublic,{isPublic=it})}
+        }
+        Button(onClick={
+            onSave(initial.copy(profileType=profileType,slug=slug,fullName=name,jobTitle=fixedTitle,email=email,phone=phone,photoUrl=photo,active=active,publicVisible=isPublic))
+        },enabled=canSave,modifier=Modifier.fillMaxWidth()){Text("Guardar cambios")}
         OutlinedButton(onClick=onCancel,modifier=Modifier.fillMaxWidth()){Text("Cancelar")}
     }
 }
