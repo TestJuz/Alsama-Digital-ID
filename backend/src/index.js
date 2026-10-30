@@ -10,13 +10,35 @@ function safeEqual(a,b){if(typeof a!=='string'||typeof b!=='string'||a.length!==
 const now=()=>new Date().toISOString();
 const slugRe=/^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const uuidRe=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const select='id,slug,full_name,job_title,email,phone,photo_url,active,public_visible,created_at,updated_at';
-const employee=r=>({id:r.id,slug:r.slug,fullName:r.full_name,jobTitle:r.job_title,email:r.email,phone:r.phone,photoUrl:r.photo_url,active:!!r.active,publicVisible:!!r.public_visible,createdAt:r.created_at,updatedAt:r.updated_at});
-const publicEmployee=r=>({slug:r.slug,fullName:r.full_name,jobTitle:r.job_title,photoUrl:r.photo_url,...(r.public_visible?{email:r.email,phone:r.phone}:{})});
+const select='id,slug,full_name,job_title,email,phone,photo_url,active,public_visible,created_at,updated_at,profile_type';
+const driverPhone='+506 6167 2539',driverEmail='info@alsamatourscr.com';
+const publicContact=r=>({email:r.profile_type==='driver'?driverEmail:r.email,phone:r.profile_type==='driver'?driverPhone:r.phone});
+const roleType=v=>v.profileType||'sales';
+const employee=r=>({id:r.id,slug:r.slug,fullName:r.full_name,jobTitle:r.job_title,...publicContact(r),photoUrl:r.photo_url,profileType:r.profile_type||'sales',active:!!r.active,publicVisible:!!r.public_visible,createdAt:r.created_at,updatedAt:r.updated_at});
+const publicEmployee=r=>({slug:r.slug,fullName:r.full_name,jobTitle:r.job_title,photoUrl:r.photo_url,profileType:r.profile_type||'sales',...(r.public_visible?publicContact(r):{})});
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const vcf=s=>String(s??'').replace(/\\/g,'\\\\').replace(/\r?\n/g,'\\n').replace(/[,;]/g,'\\$&');
 const body=async req=>{if(!req.headers.get('content-type')?.toLowerCase().startsWith('application/json'))throw [415,'unsupported_media_type'];if(Number(req.headers.get('content-length')||0)>16384)throw [413,'payload_too_large'];const s=await req.text();if(s.length>16384)throw [413,'payload_too_large'];try{const v=JSON.parse(s);if(!v||Array.isArray(v)||typeof v!=='object')throw 0;return v}catch{throw [400,'invalid_json']}};
-function validate(v,partial=false){const allowed=['slug','fullName','jobTitle','email','phone','photoUrl','active','publicVisible'];if(Object.keys(v).some(k=>!allowed.includes(k)))return 'unknown_field';for(const k of ['slug','fullName','jobTitle','email','phone']){if(!partial||k in v){if(typeof v[k]!=='string'||!v[k].trim()||v[k].length> (k==='email'?254:120))return 'invalid_'+k}}if('slug'in v&&(!slugRe.test(v.slug)||v.slug.length>90))return 'invalid_slug';if('email'in v&&!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.email))return 'invalid_email';if('phone'in v&&!/^\+?[0-9 ()-]{7,25}$/.test(v.phone))return 'invalid_phone';if('photoUrl'in v&&v.photoUrl!==null&&(typeof v.photoUrl!=='string'||v.photoUrl.length>2048||!/^https:\/\/[^\s]+$/i.test(v.photoUrl)))return 'invalid_photoUrl';for(const k of ['active','publicVisible'])if(k in v&&typeof v[k]!=='boolean')return 'invalid_'+k;return null}
+function validate(v,partial=false){
+ const allowed=['slug','fullName','jobTitle','email','phone','photoUrl','active','publicVisible','profileType'];
+ if(Object.keys(v).some(k=>!allowed.includes(k)))return 'unknown_field';
+ const type=roleType(v);
+ if(!['sales','driver','admin','other'].includes(type))return 'invalid_profileType';
+ for(const k of ['slug','fullName']){
+   if(!partial||k in v){if(typeof v[k]!=='string'||!v[k].trim()||v[k].length>120)return 'invalid_'+k}
+ }
+ if('slug' in v&&(!slugRe.test(v.slug)||v.slug.length>90))return 'invalid_slug';
+ if(type!=='driver'){
+   for(const k of ['jobTitle','email','phone']){
+     if(!partial||k in v){if(typeof v[k]!=='string'||!v[k].trim()||v[k].length>(k==='email'?254:120))return 'invalid_'+k}
+   }
+ }
+ if('email' in v&&v.email&&!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(v.email))return 'invalid_email';
+ if('phone' in v&&v.phone&&!/^\\+?[0-9 ()-]{7,25}$/.test(v.phone))return 'invalid_phone';
+ if('photoUrl' in v&&v.photoUrl!==null&&(typeof v.photoUrl!=='string'||v.photoUrl.length>2048||!/^https:\\/\\/[^\\s]+$/i.test(v.photoUrl)))return 'invalid_photoUrl';
+ for(const k of ['active','publicVisible'])if(k in v&&typeof v[k]!=='boolean')return 'invalid_'+k;
+ return null;
+}
 async function auth(req,env){const m=/^Bearer ([A-Fa-f0-9]{64})$/.exec(req.headers.get('Authorization')||'');if(!m)return null;return env.DB.prepare('SELECT admins.id,admins.email FROM sessions JOIN admins ON sessions.admin_id=admins.id LEFT JOIN employees ON lower(employees.email)=lower(admins.email) WHERE sessions.token_hash=? AND sessions.expires_at>? AND (employees.id IS NULL OR employees.active=1)').bind(await sha(m[1]),now()).first()}
 
 async function employeeAuth(req,env){
@@ -30,6 +52,11 @@ async function issueSession(env,table,userId,role){
  const sql=table==='sessions'?'INSERT INTO sessions (token_hash,admin_id,expires_at,created_at) VALUES (?,?,?,?)':'INSERT INTO employee_sessions (token_hash,employee_id,expires_at,created_at) VALUES (?,?,?,?)';
  await env.DB.prepare(sql).bind(await sha(accessToken),userId,expiresAt,now()).run();
  return {accessToken,expiresAt,role};
+}
+async function newRefresh(env,actorType,actorId){
+ const refreshToken=rand(),date=now(),refreshExpiresAt=new Date(Date.now()+90*86400000).toISOString();
+ await env.DB.prepare('INSERT INTO refresh_sessions(token_hash,actor_type,actor_id,expires_at,created_at,updated_at) VALUES(?,?,?,?,?,?)').bind(await sha(refreshToken),actorType,actorId,refreshExpiresAt,date,date).run();
+ return {refreshToken,refreshExpiresAt};
 }
 async function recordFailedLogin(env,key,t){
  await env.DB.prepare('INSERT INTO login_attempts (key,attempts,window_start) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET attempts=CASE WHEN ?-window_start>=900000 THEN 1 ELSE attempts+1 END,window_start=CASE WHEN ?-window_start>=900000 THEN ? ELSE window_start END').bind(key,1,t,t,t,t).run();
@@ -62,7 +89,8 @@ else if(method==='POST'&&p==='/v1/auth/login'){
  await env.DB.prepare('DELETE FROM login_attempts WHERE key=?').bind(key).run();
  const isAdmin=Boolean(admin);
  const session=await issueSession(env,isAdmin?'sessions':'employee_sessions',(admin||staff).id,isAdmin?'admin':'employee');
- response=json({...session,isAdmin,employee:profile?employee(profile):(staff?employee(staff):null),...(isAdmin?{admin:{id:admin.id,email:admin.email}}:{})});
+ const persistent=await newRefresh(env,isAdmin?'admin':'employee',(admin||staff).id);
+ response=json({...session,...persistent,isAdmin,employee:profile?employee(profile):(staff?employee(staff):null),...(isAdmin?{admin:{id:admin.id,email:admin.email}}:{})});
 }
 else if(method==='POST'&&p==='/v1/auth/activate'){
  const v=await body(req);
