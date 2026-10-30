@@ -4,7 +4,6 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
-import android.nfc.NfcAdapter
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -52,7 +51,7 @@ private val Leaf = Color(0xFF327453)
 
 class MainActivity : ComponentActivity() {
     private val preferences by lazy { getSharedPreferences("alsama_config", MODE_PRIVATE) }
-    private val api by lazy { ApiClient { preferences.getString("api_url", BuildConfig.API_BASE_URL).orEmpty() } }
+    private val api by lazy { ApiClient() }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -68,10 +67,8 @@ class MainActivity : ComponentActivity() {
             var loggedIn by remember { mutableStateOf(false) }
             var error by remember { mutableStateOf("") }
             var busy by remember { mutableStateOf(false) }
-            var refreshKey by remember { mutableIntStateOf(0) }
-            var url by remember { mutableStateOf(preferences.getString("api_url", BuildConfig.API_BASE_URL).orEmpty()) }
             val scope = rememberCoroutineScope()
-            val apiOrigin = url.trimEnd('/')
+            val apiOrigin = BuildConfig.API_BASE_URL.trimEnd('/')
 
             fun syncProfile(slug: String = "sebastian-melendez-rodriguez") {
                 scope.launch {
@@ -96,9 +93,6 @@ class MainActivity : ComponentActivity() {
                 employee = item; verified = serverVerified; page = "home"
                 syncProfile(item.slug)
             }
-            LaunchedEffect(url, refreshKey) {
-                if (page == "home" && role.isNotBlank() && url.startsWith("https://")) syncProfile(employee.slug)
-            }
 
             MaterialTheme(colorScheme = lightColorScheme(primary = Forest, secondary = Leaf, background = Light, surface = Color.White)) {
                 Scaffold(
@@ -108,9 +102,6 @@ class MainActivity : ComponentActivity() {
                                 Text("ALSAMA", color = Color.White, fontWeight = FontWeight.Black, fontSize = 20.sp, letterSpacing = 2.sp)
                                 Text("  DIGITAL ID", color = Mint, fontSize = 12.sp)
                                 Spacer(Modifier.weight(1f))
-                                IconButton(onClick = { page = "settings" }) {
-                                    Icon(Icons.Default.Settings, contentDescription = "Ajustes", tint = Color.White)
-                                }
                             }
                         }
                     },
@@ -183,10 +174,6 @@ class MainActivity : ComponentActivity() {
                             "editor" -> if(role=="admin") EmployeeEditor(editing, onCancel={page="directory"}, onSave={ e ->
                                 scope.launch { busy=true; error=""; try { api.save(e);page="directory";syncDirectory() } catch(t:Exception){error=t.message ?: "No se pudo guardar"} finally {busy=false} }
                             }) else LoginScreen(onLogin={_,_,_->},onActivate={page="activation"})
-                            "settings" -> SettingsScreen(url, { url = it }, onSave = {
-                                preferences.edit().putString("api_url",url.trimEnd('/')).apply()
-                                refreshKey++ ;page="home"
-                            }, onBack={page="home"}, nfcSupported = NfcAdapter.getDefaultAdapter(this@MainActivity) != null)
                         }
                     }
                 }
@@ -392,19 +379,6 @@ private fun EmployeeEditor(initial:Employee,onCancel:()->Unit,onSave:(Employee)-
         Button(onClick={onSave(initial.copy(slug=slug,fullName=name,jobTitle=job,email=email,phone=phone,photoUrl=photo,active=active,publicVisible=isPublic))},
             enabled=name.isNotBlank()&&job.isNotBlank()&&email.contains("@")&&slug.matches(Regex("[a-z0-9-]+")),modifier=Modifier.fillMaxWidth()){Text("Guardar cambios")}
         OutlinedButton(onClick=onCancel,modifier=Modifier.fillMaxWidth()){Text("Cancelar")}
-    }
-}
-
-@Composable
-private fun SettingsScreen(url:String,onUrl:(String)->Unit,onSave:()->Unit,onBack:()->Unit,nfcSupported:Boolean){
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),verticalArrangement=Arrangement.spacedBy(16.dp)){
-        Text("Configuración",fontSize=25.sp,fontWeight=FontWeight.Bold,color=Forest)
-        Text("Servidor de Alsama Digital ID",color=Forest,fontWeight=FontWeight.Bold)
-        OutlinedTextField(url,onUrl,modifier=Modifier.fillMaxWidth(),label={Text("URL HTTPS de Cloudflare Worker")},placeholder={Text("https://...workers.dev")},singleLine=true)
-        Text("La URL es pública. Las contraseñas y tokens nunca se incluyen en el proyecto.",fontSize=12.sp,color=Leaf)
-        Button(onClick=onSave,enabled=url.startsWith("https://"),modifier=Modifier.fillMaxWidth()){Text("Guardar servidor")}
-        Text("NFC disponible: ${if(nfcSupported) "Sí, lector/emulador compatible por comprobar" else "No en este dispositivo"}",color=Leaf)
-        OutlinedButton(onClick=onBack,modifier=Modifier.fillMaxWidth()){Text("Volver")}
     }
 }
 
