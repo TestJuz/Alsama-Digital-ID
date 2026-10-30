@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- 64dp stays inside the 66dp safe area of a 108dp adaptive icon. -->
+    <item
+        android:drawable="@drawable/alsama_logo"
+        android:width="64dp"
+        android:height="64dp"
+        android:gravity="center" />
+</layer-list>
