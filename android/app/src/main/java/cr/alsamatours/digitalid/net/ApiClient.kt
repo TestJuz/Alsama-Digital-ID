@@ -1,6 +1,7 @@
 package cr.alsamatours.digitalid.net
 
 import cr.alsamatours.digitalid.model.Employee
+import cr.alsamatours.digitalid.BuildConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -14,14 +15,15 @@ data class AuthSession(val role: String, val employee: Employee?)
 data class InvitationCode(val email: String, val code: String, val expiresAt: String)
 
 /** No credential is persisted to disk. App restart requires re-authentication. */
-class ApiClient(private val urlProvider: () -> String) {
+class ApiClient {
+    private val apiOrigin = BuildConfig.API_BASE_URL.trimEnd('/')
     var accessToken: String? = null
         private set
 
     private suspend fun request(path: String, method: String = "GET", body: JSONObject? = null, authenticated: Boolean = false): JSONObject = withContext(Dispatchers.IO) {
-        val root = urlProvider().trim().trimEnd('/')
-        require(root.startsWith("https://")) { "Configure primero la URL HTTPS de la API en Ajustes." }
-        val connection = (URL(root + path).openConnection() as HttpURLConnection).apply {
+        // A pinned HTTPS origin prevents redirection of sign-in details to a custom host.
+        val connection = (URL(apiOrigin + path).openConnection() as HttpURLConnection).apply {
+            instanceFollowRedirects = false
             requestMethod = method
             connectTimeout = 10000
             readTimeout = 10000
