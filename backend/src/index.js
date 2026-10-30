@@ -47,16 +47,21 @@ else if(method==='POST'&&p==='/v1/auth/login'){
  const key=await sha(email+'|'+ip),t=Date.now();
  const attempt=await env.DB.prepare('SELECT attempts,window_start FROM login_attempts WHERE key=?').bind(key).first();
  if(attempt&&t-attempt.window_start<900000&&attempt.attempts>=5)return error(429,'rate_limited','Too many attempts');
- const admin=await env.DB.prepare('SELECT * FROM admins WHERE email=?').bind(email).first();
- const staff=admin?null:await env.DB.prepare('SELECT '+select.split(',').map(c=>'employees.'+c).join(',')+',ec.password_hash AS employee_hash,ec.password_salt AS employee_salt FROM employees JOIN employee_credentials ec ON ec.employee_id=employees.id WHERE lower(employees.email)=? AND employees.active=1').bind(email).first();
+ if(v.role!==undefined && v.role!=='admin' && v.role!=='employee')return error(422,'validation_error','role must be admin or employee');
+ // Explicit role selection is mandatory when the same email is both administrator and staff.
+ // Missing role retains the old admin-first behavior for backwards compatibility.
+ const requestedRole=v.role||'auto';
+ const admin=requestedRole==='employee'?null:await env.DB.prepare('SELECT * FROM admins WHERE email=?').bind(email).first();
+ const staff=requestedRole==='admin'?null:await env.DB.prepare('SELECT '+select.split(',').map(c=>'employees.'+c).join(',')+',ec.password_hash AS employee_hash,ec.password_salt AS employee_salt FROM employees JOIN employee_credentials ec ON ec.employee_id=employees.id WHERE lower(employees.email)=? AND employees.active=1').bind(email).first();
+ const actor=admin||staff;
  const salt=admin?.password_salt||staff?.employee_salt||'placeholder-salt';
  const hashed=await hashPassword(v.password,salt);
- if((!admin&&!staff)||!safeEqual(hashed,admin?.password_hash||staff?.employee_hash)){
+ if(!actor||!safeEqual(hashed,admin?.password_hash||staff?.employee_hash)){
    await recordFailedLogin(env,key,t);
    return error(401,'invalid_credentials','Invalid credentials');
  }
  await env.DB.prepare('DELETE FROM login_attempts WHERE key=?').bind(key).run();
- const session=await issueSession(env,admin?'sessions':'employee_sessions',admin?.id||staff.id,admin?'admin':'employee');
+ const session=await issueSession(env,admin?'sessions':'employee_sessions',actor.id,admin?'admin':'employee');
  response=json({...session,...(admin?{admin:{id:admin.id,email:admin.email}}:{employee:employee(staff)})});
 }
 else if(method==='POST'&&p==='/v1/auth/activate'){

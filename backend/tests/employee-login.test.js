@@ -62,6 +62,26 @@ test('Admin creates email-bound employee account without exposing a password',as
   assert.equal((await req('/v1/admin/employees/'+id+'/status','PATCH',{active:false},adminToken)).status,200);
   assert.equal((await req('/v1/me','GET',undefined,newToken)).status,401);
   assert.equal((await req('/v1/auth/login','POST',{email,password:'CI-only-employee-updated-1234'})).status,401);
+  // The same email can safely represent two independently authenticated roles.
+  const dual=await req('/v1/admin/employees','POST',{slug:'ci-dual-'+Date.now(),fullName:'Test Admin and Staff',jobTitle:'IT Leader',email:username,phone:'+506 7177 8171',active:true,publicVisible:false},adminToken);
+  assert.equal(dual.status,201,JSON.stringify(dual.body));
+  const dualId=dual.body.employee.id;
+  const dualInvite=await req('/v1/admin/employees/'+dualId+'/invite','POST',{},adminToken);
+  assert.equal(dualInvite.status,200,JSON.stringify(dualInvite.body));
+  const dualPass='CI-dual-account-employee-pass-456';
+  const activation=await req('/v1/auth/activate','POST',{email:username,code:dualInvite.body.activationCode,password:dualPass});
+  assert.equal(activation.status,200,JSON.stringify(activation.body));
+  const staffRole=await req('/v1/auth/login','POST',{email:username,password:dualPass,role:'employee'});
+  assert.equal(staffRole.status,200,JSON.stringify(staffRole.body));
+  assert.equal(staffRole.body.role,'employee');
+  assert.equal(staffRole.body.employee.id,dualId);
+  assert.equal((await req('/v1/admin/employees','GET',undefined,staffRole.body.accessToken)).status,401);
+  const adminRole=await req('/v1/auth/login','POST',{email:username,password:adminPassword,role:'admin'});
+  assert.equal(adminRole.status,200,JSON.stringify(adminRole.body));
+  assert.equal(adminRole.body.role,'admin');
+  assert.equal((await req('/v1/me','GET',undefined,adminRole.body.accessToken)).status,401);
+  assert.equal((await req('/v1/auth/login','POST',{email:username,password:dualPass,role:'admin'})).status,401);
+  assert.equal((await req('/v1/auth/login','POST',{email:username,password:adminPassword,role:'employee'})).status,401);
   assert.equal((await req('/v1/auth/logout','POST',{},adminToken)).status,200);
   assert.equal((await req('/v1/admin/employees','GET',undefined,adminToken)).status,401);
 });
