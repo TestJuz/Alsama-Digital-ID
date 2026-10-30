@@ -24,3 +24,9 @@ La respuesta de login usa `accessToken`. Las respuestas del directorio contienen
 El workflow `.github/workflows/android.yml` compila un APK debug en GitHub Actions y lo ofrece como artefacto. No necesita cuenta de Google Play. El APK debug es solo para pruebas; la distribución final requiere firma de release adecuada y gestión de actualizaciones.
 
 No se incluyen credenciales administrativas. La conexión Android↔Cloudflare se considera **pendiente** hasta que se verifique un endpoint desplegado y se hagan pruebas en dispositivo real.
+
+## Employee accounts (new)
+
+The app starts with a shared **Login** screen. `admin` sees the administration directory; `employee` is routed only to their own profile from `GET /v1/me`, never from a user-submitted slug. **Activar cuenta de empleado** accepts an invite code issued in administration via **Crear acceso**; each invite expires in 24 hours and can be redeemed once. **Mi cuenta** changes a password or logs out. Sessions are held in memory; restarting the app requires a new login.
+
+Requires backend migration `0002_employee_login.sql` and a coordinated Cloudflare deployment. Older APKs do not implement the login and activate screens. No email-sending or automatic email ownership verification is provided.
