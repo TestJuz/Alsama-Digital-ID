@@ -49,10 +49,43 @@ class ApiClient(private val urlProvider: () -> String) {
     suspend fun publicStaff(slug: String): Employee = request("/v1/public/staff/${encode(slug)}").let {
         Employee.fromJson(it.optJSONObject("employee") ?: it)
     }
-    suspend fun login(email: String, password: String) {
-        val response = request("/v1/auth/login", "POST", JSONObject().put("email", email.trim()).put("password", password))
-        accessToken = response.optString("accessToken").ifBlank { response.optString("token") }
-        if (accessToken.isNullOrBlank()) throw ApiException(500, "El servidor no devolvió una sesión válida.")
+    data class LoginResult(val role: String, val employee: Employee?)
+    data class Invitation(val email: String, val activationCode: String, val expiresAt: String)
+
+    suspend fun login(email: String, password: String): LoginResult {
+        val response = request("/v1/auth/login", "POST", JSONObject()
+            .put("email", email.trim().lowercase()).put("password", password))
+        val token = response.optString("accessToken")
+        val role = response.optString("role")
+        if (token.isBlank() || role !in listOf("admin", "employee")) {
+            throw ApiException(500, "El servidor no devolvió una sesión válida.")
+        }
+        accessToken = token
+        return LoginResult(role, response.optJSONObject("employee")?.let(Employee::fromJson))
+    }
+
+    suspend fun myCredential(): Employee =
+        Employee.fromJson(request("/v1/me", authenticated = true).getJSONObject("employee"))
+
+    suspend fun activate(email: String, code: String, newPassword: String) {
+        request("/v1/auth/activate", "POST", JSONObject().put("email", email.trim().lowercase())
+            .put("code", code.trim()).put("password", newPassword))
+    }
+
+    suspend fun changePassword(currentPassword: String, newPassword: String) {
+        request("/v1/auth/change-password", "POST",
+            JSONObject().put("currentPassword", currentPassword).put("newPassword", newPassword),
+            authenticated = true)
+        accessToken = null // The backend revokes sessions on password change.
+    }
+
+    suspend fun invite(employee: Employee): Invitation {
+        val reply = request("/v1/admin/employees/${encode(employee.id)}/invite", "POST", JSONObject(), true)
+        return Invitation(
+            reply.getString("email"),
+            reply.getString("activationCode"),
+            reply.getString("expiresAt")
+        )
     }
     suspend fun logout() {
         try { request("/v1/auth/logout", "POST", JSONObject(), true) } finally { accessToken = null }
