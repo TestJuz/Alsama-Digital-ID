@@ -1,9 +1,12 @@
 package cr.alsamatours.digitalid.net
 
+import android.content.Context
 import cr.alsamatours.digitalid.model.Employee
 import cr.alsamatours.digitalid.BuildConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -11,17 +14,19 @@ import java.net.URL
 
 class ApiException(val status: Int, message: String) : Exception(message)
 
-data class AuthSession(val isAdmin: Boolean, val employee: Employee?)
+data class AuthSession(val isAdmin: Boolean, val employee: Employee?, val email: String)
 data class InvitationCode(val email: String, val code: String, val expiresAt: String)
 
-/** No credential is persisted to disk. App restart requires re-authentication. */
-class ApiClient {
+/** Short-lived access tokens stay in memory; encrypted refresh credentials survive restarts. */
+class ApiClient(context: Context) {
+    private val sessionStore = SecureSessionStore(context.applicationContext)
+    private val refreshMutex = Mutex()
     private val apiOrigin = BuildConfig.API_BASE_URL.trimEnd('/')
     var accessToken: String? = null
         private set
 
-    private suspend fun request(path: String, method: String = "GET", body: JSONObject? = null, authenticated: Boolean = false): JSONObject = withContext(Dispatchers.IO) {
-        // A pinned HTTPS origin prevents redirection of sign-in details to a custom host.
+    private suspend fun rawRequest(path: String, method: String = "GET", body: JSONObject? = null, authenticated: Boolean = false): JSONObject = withContext(Dispatchers.IO) {
+        // This fixed HTTPS endpoint does not follow redirects, including for auth.
         val connection = (URL(apiOrigin + path).openConnection() as HttpURLConnection).apply {
             instanceFollowRedirects = false
             requestMethod = method
@@ -29,7 +34,7 @@ class ApiClient {
             readTimeout = 10000
             setRequestProperty("Accept", "application/json")
             if (authenticated) {
-                val token = accessToken ?: throw ApiException(401, "Debe iniciar sesión nuevamente.")
+                val token = accessToken ?: throw ApiException(401, "Debes iniciar sesión nuevamente.")
                 setRequestProperty("Authorization", "Bearer $token")
             }
             if (body != null) {
@@ -44,10 +49,61 @@ class ApiClient {
                 ?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
             val json = try { JSONObject(raw) } catch (_: Exception) { JSONObject() }
             if (code !in 200..299) {
-                throw ApiException(code, json.optString("error", json.optString("message", "Error HTTP $code")))
+                val err = json.optJSONObject("error")
+                throw ApiException(code, err?.optString("message") ?: "Error HTTP $code")
             }
             json
         } finally { connection.disconnect() }
+    }
+
+    private fun saveSession(response: JSONObject): AuthSession {
+        val access = response.optString("accessToken")
+        val refresh = response.optString("refreshToken")
+        if (!Regex("[0-9a-fA-F]{64}").matches(access) ||
+            !Regex("[0-9a-fA-F]{64}").matches(refresh) ||
+            !response.has("isAdmin")) throw ApiException(500, "Respuesta de sesión inválida.")
+        sessionStore.save(refresh)
+        accessToken = access
+        val person = response.optJSONObject("employee")?.let(Employee::fromJson)
+        val isAdmin = response.getBoolean("isAdmin")
+        val email = if (isAdmin) response.optJSONObject("admin")?.optString("email").orEmpty()
+                    else person?.email.orEmpty()
+        return AuthSession(isAdmin,person,email)
+    }
+
+    private suspend fun refreshSession(): AuthSession? = refreshMutex.withLock {
+        val token = sessionStore.read() ?: return@withLock null
+        try {
+            val response = rawRequest("/v1/auth/refresh", "POST", JSONObject().put("refreshToken",token))
+            return@withLock saveSession(response)
+        } catch (e: ApiException) {
+            if (e.status == 401) clearSession()
+            throw e
+        }
+    }
+
+    suspend fun restoreSession(): AuthSession? {
+        if (sessionStore.read() == null) return null
+        return try { refreshSession() } catch (e: ApiException) {
+            if(e.status==401) null else throw e
+        }
+    }
+
+    private suspend fun request(path: String, method: String = "GET", body: JSONObject? = null, authenticated: Boolean = false): JSONObject {
+        if (authenticated && accessToken == null) {
+            if(refreshSession()==null) throw ApiException(401,"Debes iniciar sesión.")
+        }
+        try {
+            return rawRequest(path,method,body,authenticated)
+        } catch (e: ApiException) {
+            if (!authenticated || e.status != 401 || refreshSession()==null) throw e
+            return rawRequest(path,method,body,authenticated)
+        }
+    }
+
+    private fun clearSession() {
+        sessionStore.clear()
+        accessToken=null
     }
 
     suspend fun health() = request("/v1/health").optBoolean("ok", false)
@@ -55,12 +111,8 @@ class ApiClient {
         Employee.fromJson(it.optJSONObject("employee") ?: it)
     }
     suspend fun login(email: String, password: String): AuthSession {
-        val response = request("/v1/auth/login", "POST", JSONObject().put("email", email.trim()).put("password", password))
-        val token = response.optString("accessToken").ifBlank { response.optString("token") }
-        if (token.isBlank() || !response.has("isAdmin")) throw ApiException(500, "El servidor no devolvió una sesión válida.")
-        accessToken = token
-        val person = response.optJSONObject("employee")?.let(Employee::fromJson)
-        return AuthSession(response.optBoolean("isAdmin",false), person)
+        val res=request("/v1/auth/login","POST",JSONObject().put("email",email.trim()).put("password",password))
+        return saveSession(res)
     }
     suspend fun myCredential(): Employee =
         request("/v1/me", authenticated = true).let { Employee.fromJson(it.getJSONObject("employee")) }
@@ -79,10 +131,14 @@ class ApiClient {
         request("/v1/auth/change-password", "POST", JSONObject()
             .put("currentPassword", currentPassword)
             .put("newPassword", newPassword), true)
-        accessToken = null
+        clearSession()
     }
     suspend fun logout() {
-        try { request("/v1/auth/logout", "POST", JSONObject(), true) } finally { accessToken = null }
+        val refresh=sessionStore.read()
+        try {
+            if(refresh!=null) rawRequest("/v1/auth/logout","POST",JSONObject().put("refreshToken",refresh))
+            else if(accessToken!=null) rawRequest("/v1/auth/logout","POST",JSONObject(),true)
+        } finally { clearSession() }
     }
     suspend fun listEmployees(): List<Employee> {
         val json = request("/v1/admin/employees", authenticated = true)
