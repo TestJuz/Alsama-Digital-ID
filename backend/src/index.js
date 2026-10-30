@@ -33,9 +33,9 @@ function validate(v,partial=false){
      if(!partial||k in v){if(typeof v[k]!=='string'||!v[k].trim()||v[k].length>(k==='email'?254:120))return 'invalid_'+k}
    }
  }
- if('email' in v&&v.email&&!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(v.email))return 'invalid_email';
- if('phone' in v&&v.phone&&!/^\\+?[0-9 ()-]{7,25}$/.test(v.phone))return 'invalid_phone';
- if('photoUrl' in v&&v.photoUrl!==null&&(typeof v.photoUrl!=='string'||v.photoUrl.length>2048||!/^https:\\/\\/[^\\s]+$/i.test(v.photoUrl)))return 'invalid_photoUrl';
+ if('email' in v&&v.email&&!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.email))return 'invalid_email';
+ if('phone' in v&&v.phone&&!/^\+?[0-9 ()-]{7,25}$/.test(v.phone))return 'invalid_phone';
+ if('photoUrl' in v&&v.photoUrl!==null&&(typeof v.photoUrl!=='string'||v.photoUrl.length>2048||!/^https:\/\/[^\s]+$/i.test(v.photoUrl)))return 'invalid_photoUrl';
  for(const k of ['active','publicVisible'])if(k in v&&typeof v[k]!=='boolean')return 'invalid_'+k;
  return null;
 }
@@ -98,7 +98,7 @@ else if(method==='POST'&&p==='/v1/auth/activate'){
  const email=v.email.toLowerCase().trim();
  const existingAdmin=await env.DB.prepare('SELECT id FROM admins WHERE lower(email)=?').bind(email).first();
  if(existingAdmin)return error(409,'already_has_access','Este correo ya tiene acceso con contraseña de administrador');
- const invited=await env.DB.prepare('SELECT ei.employee_id,ei.code_hash,ei.expires_at,e.profile_type FROM employee_invites ei JOIN employees e ON e.id=ei.employee_id WHERE lower(e.email)=? AND e.active=1 AND e.profile_type!='driver'').bind(email).first();
+ const invited=await env.DB.prepare('SELECT ei.employee_id,ei.code_hash,ei.expires_at,e.profile_type FROM employee_invites ei JOIN employees e ON e.id=ei.employee_id WHERE lower(e.email)=? AND e.active=1 AND e.profile_type<>\'driver\'').bind(email).first();
  const inputHash=await sha(v.code);
  if(!invited||invited.expires_at<now()||!safeEqual(invited.code_hash,inputHash))return error(403,'invalid_invitation','Código inválido o vencido');
  const salt=rand(),hashed=await hashPassword(v.password,salt),date=now();
@@ -134,7 +134,7 @@ else if(method==='POST'&&p==='/v1/auth/refresh'){
  const admin=row.actor_type==='admin';
  const session=await issueSession(env,admin?'sessions':'employee_sessions',actor.id,admin?'admin':'employee');
  const profile=admin?await env.DB.prepare('SELECT '+select+' FROM employees WHERE lower(email)=? AND active=1').bind(actor.email.toLowerCase()).first():await env.DB.prepare('SELECT '+select+' FROM employees WHERE id=?').bind(actor.id).first();
- response=json({...session,refreshToken:newToken,refreshExpiresAt:newExpiration,isAdmin:admin,employee:profile?employee(profile):null});
+ response=json({...session,refreshToken:newToken,refreshExpiresAt:newExpiration,isAdmin:admin,employee:profile?employee(profile):null,...(admin?{admin:{id:actor.id,email:actor.email}}:{})});
 }
 else if(method==='POST'&&p==='/v1/auth/change-password'){
  const admin=await auth(req,env);
