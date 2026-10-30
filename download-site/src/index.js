@@ -1,4 +1,4 @@
-const APK = "https://github.com/TestJuz/Alsama-Digital-ID/releases/latest/download/Alsama-Digital-ID.apk";
+const APK = "https://github.com/TestJuz/Alsama-Digital-ID/releases/latest/download/app-debug.apk";
 const HTML = `<!doctype html>
 <html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Alsama Digital ID | Descargar</title>
