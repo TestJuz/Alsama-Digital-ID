@@ -1,4 +1,4 @@
-name: Android debug APK
+name: Android APK and public download
 on:
   push:
     branches: [main, feature/android-app]
@@ -27,12 +27,38 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.11.1'
-      - name: Build debug APK
+      - name: Build Android APK
         working-directory: android
-        run: gradle --no-daemon :app:assembleDebug
-      - name: Upload APK
+        run: gradle --no-daemon :app:assembleDebug -PalsamaVersionCode="${{ github.run_number }}"
+      - name: Upload APK build artifact
         uses: actions/upload-artifact@v4
         with:
           name: Alsama-Digital-ID-debug
           path: android/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
+
+  publish:
+    name: Publish downloadable APK
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: Alsama-Digital-ID-debug
+          path: distribution
+      - name: Publish GitHub Release with direct APK asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: v0.1.${{ github.run_number }}
+        run: |
+          test -s distribution/app-debug.apk
+          gh release create "$RELEASE_TAG" \
+            "distribution/app-debug.apk#Alsama-Digital-ID.apk" \
+            --target "$GITHUB_SHA" \
+            --title "Alsama Digital ID $RELEASE_TAG" \
+            --notes "Versión Android de prueba. Descarga directa desde el portal oficial. El APK se genera con firma de depuración; para actualizaciones instalables sobre versiones anteriores se necesita una firma de publicación estable." \
+            --latest
