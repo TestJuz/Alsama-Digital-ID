@@ -22,7 +22,7 @@ async function auth(req,env){const m=/^Bearer ([A-Fa-f0-9]{64})$/.exec(req.heade
 async function employeeAuth(req,env){
  const m=/^Bearer ([A-Fa-f0-9]{64})$/.exec(req.headers.get('Authorization')||'');
  if(!m)return null;
- return env.DB.prepare('SELECT '+select+' FROM employee_sessions JOIN employees ON employee_sessions.employee_id=employees.id WHERE employee_sessions.token_hash=? AND employee_sessions.expires_at>? AND employees.active=1').bind(await sha(m[1]),now()).first();
+ return env.DB.prepare('SELECT '+select.split(',').map(c=>'employees.'+c).join(',')+' FROM employee_sessions JOIN employees ON employee_sessions.employee_id=employees.id WHERE employee_sessions.token_hash=? AND employee_sessions.expires_at>? AND employees.active=1').bind(await sha(m[1]),now()).first();
 }
 async function hashPassword(p,s){return passwordHash(p,s)}
 async function issueSession(env,table,userId,role){
@@ -48,7 +48,7 @@ else if(method==='POST'&&p==='/v1/auth/login'){
  const attempt=await env.DB.prepare('SELECT attempts,window_start FROM login_attempts WHERE key=?').bind(key).first();
  if(attempt&&t-attempt.window_start<900000&&attempt.attempts>=5)return error(429,'rate_limited','Too many attempts');
  const admin=await env.DB.prepare('SELECT * FROM admins WHERE email=?').bind(email).first();
- const staff=admin?null:await env.DB.prepare('SELECT '+select+',ec.password_hash AS employee_hash,ec.password_salt AS employee_salt FROM employees JOIN employee_credentials ec ON ec.employee_id=employees.id WHERE lower(employees.email)=? AND employees.active=1').bind(email).first();
+ const staff=admin?null:await env.DB.prepare('SELECT '+select.split(',').map(c=>'employees.'+c).join(',')+',ec.password_hash AS employee_hash,ec.password_salt AS employee_salt FROM employees JOIN employee_credentials ec ON ec.employee_id=employees.id WHERE lower(employees.email)=? AND employees.active=1').bind(email).first();
  const salt=admin?.password_salt||staff?.employee_salt||'placeholder-salt';
  const hashed=await hashPassword(v.password,salt);
  if((!admin&&!staff)||!safeEqual(hashed,admin?.password_hash||staff?.employee_hash)){
