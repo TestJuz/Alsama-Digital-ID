@@ -1,20 +1,29 @@
 # Alsama Digital ID API
 
-Cloudflare Worker + D1. All API payload keys are camelCase. Deployed API: https://alsama-digital-id-api.alsama-digital-id.workers.dev
+Cloudflare Worker + D1. Base URL: `https://alsama-digital-id-api.alsama-digital-id.workers.dev`
 
-## Endpoints
-GET /v1/health; GET /v1/public/staff/:slug; GET /v1/public/staff/:slug/contact.vcf; GET /p/:slug; POST /v1/auth/bootstrap (one-time); POST /v1/auth/login; POST /v1/auth/logout; GET/POST /v1/admin/employees; GET/PUT /v1/admin/employees/:id; PATCH /v1/admin/employees/:id/status.
+## Employee and administrator sign-in
 
-## Security and initialization
-Bootstrap is disabled unless the environment contains a secret named BOOTSTRAP_TOKEN. Set an unpredictable 32-byte-or-longer value as a Worker secret, then **once** POST /v1/auth/bootstrap with header X-Bootstrap-Token and JSON {"email":"administrator@example.com","password":"unique-long-passphrase"}. It refuses to register another admin once one exists. Remove the BOOTSTRAP_TOKEN secret afterward. No bootstrap secret or administrator password belongs in Git or Android.
+Employees and administrators sign in to `POST /v1/auth/login` with `{"email":"...","password":"..."}`. The response contains `accessToken`, `role` (`admin` or `employee`) and `employee` data only for an authenticated employee. The employee's role is determined server-side. Passwords and session tokens are never committed.
 
-Passwords are stored as salted PBKDF2-HMAC-SHA256 (210,000 iterations). 8-hour bearer tokens are random; only SHA-256 token hashes are stored in D1. Logout deletes its stored session. Failed logins are limited to five per email/IP per 15-minute window via D1; distributed attackers may require additional Cloudflare rate limiting. Employee contact fields are public only when active and publicVisible=true. Inactive slugs return 404. All admin endpoints use Authorization: Bearer <accessToken>.
+- **Employee card:** `GET /v1/me` uses the Bearer token to load **only the employee bound to that session**, even when the employee is not publicly visible. An inactive employee immediately receives HTTP 401.
+- **Administrator:** `GET/POST /v1/admin/employees`, `GET/PUT /v1/admin/employees/{id}`, `PATCH /v1/admin/employees/{id}/status`. Employee tokens always receive HTTP 401 on administrative endpoints.
+- **Initial activation:** an authenticated admin requests `POST /v1/admin/employees/{id}/invite` (with an empty JSON body). The backend returns a 64-character one-use activation code, the employee email and an expiration timestamp 24 hours out. Only a SHA-256 hash is persisted in D1. Admin shares the code privately, outside GitHub.
+- **Employee sets password:** `POST /v1/auth/activate` body `{"email":"employee@example.com","code":"64-hex-code","password":"at-least-14-characters"}`. Activation consumes the invite, saves salted PBKDF2-SHA256 password hash and invalidates earlier employee sessions.
+- **Change password:** authenticated employee calls `POST /v1/auth/change-password` with `{"currentPassword":"...","newPassword":"..."}`, then signs in again.
+- **Logout:** `POST /v1/auth/logout` invalidates the bearer token for the active role.
+- **Public verifier:** `GET /p/{slug}`, `GET /v1/public/staff/{slug}` and `GET /v1/public/staff/{slug}/contact.vcf` stay public **only** if employee is active and publicVisible. QR verification remains intentionally public; access to the Android employee profile requires login.
 
-## Android integration
-Use HTTPS base URL above, Retrofit/OkHttp with application/json. POST /v1/auth/login and retain accessToken in protected app storage, not source or APK. Supply bearer token only to admin requests. Handle 401 by reauthentication, 409 for duplicate slug, 422 for validation, 429 for rate limits. On logout send POST /v1/auth/logout and clear local token. QR/NFC points to GET /p/:slug. Never cache credentials offline as employment proof; always check public URL online.
+## Provisioning, deployment, safety
 
-## Deployment
-From backend/: npm install; npx wrangler d1 migrations apply alsama-digital-id --remote; npx wrangler deploy. Public Worker URL is independent of alsamatourscr.com DNS. CORS_ORIGIN defaults to https://alsamatourscr.com for browser requests; native Android HTTP clients do not need CORS. Never commit .dev.vars, .env, access tokens or passwords. Free tier has Cloudflare quotas and is not guaranteed free when quotas or plan change.
+Apply `backend/migrations/0001_init.sql` if not yet present and `backend/migrations/0002_employee_login.sql` to the actual production D1 **before** deploying the new Worker. Preserve existing admin accounts, users and Worker secrets. Employee email must be unique case-insensitively. Existing employees Alexandra Wong and Sebastián will not receive passwords automatically; each requires a new admin-issued activation code.
 
-## Data privacy
-Photographs use optional external HTTPS URLs; no image-upload endpoint is provided. publicVisible=false suppresses email and phone in JSON and HTML; vCard returns 404. The company must authorize publication of employee contact details. The seeded Sebastian entry is publicVisible=true as requested.
+The first administrator is configured by the existing one-time `POST /v1/auth/bootstrap` endpoint and a temporary `BOOTSTRAP_TOKEN` Worker secret. Remove that secret once initialization succeeds. The password hash configuration in the GitHub source must match the deployed password hashing configuration (100,000 PBKDF2 iterations for new sign-ins). Admin sessions expire after 8 hours; employee sessions likewise. Rate-limiting uses D1 per email and IP.
+
+**Important limitation:** an activation code privately delivered by an admin establishes account identity within Alsama, but does **not** independently verify control of the email inbox. Automated verification email is not implemented, and generic/shared inboxes such as `info@` should not be treated as individual identity without an explicit company policy.
+
+## Development and verification
+
+`npm install`; `npx wrangler d1 migrations apply alsama-digital-id --local`; `npx wrangler dev --local`. CI uses a disposable local D1 and checks enrollment, employee isolation, revocation and password changes. This is not production deployment; production requires running the remote migration and deploying the Worker.
+
+Cloudflare free plans have quota and usage conditions. No Google Wallet integration.
