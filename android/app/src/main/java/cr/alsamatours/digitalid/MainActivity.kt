@@ -144,10 +144,10 @@ class MainActivity : ComponentActivity() {
                                     error = "Enlace configurado para lectores NFC compatibles. No funciona con todos los teléfonos."
                                 }
                             )
-                            "login" -> LoginScreen(onLogin = { email, password ->
+                            "login" -> LoginScreen(onLogin = { email, password, requestedRole ->
                                 scope.launch {
                                     busy = true;error = ""
-                                    try { val session=api.login(email,password); role=session.role; loggedIn=role=="admin"; if (role=="admin") { page="directory"; syncDirectory() } else { employee=session.employee ?: api.myCredential(); verified=true; page="home" } }
+                                    try { val session=api.login(email,password,requestedRole); role=session.role; loggedIn=role=="admin"; if (role=="admin") { page="directory"; syncDirectory() } else { employee=session.employee ?: api.myCredential(); verified=true; page="home" } }
                                     catch (t:Exception){error = t.message ?: "Error de inicio de sesión"}
                                     finally {busy=false}
                                 }
@@ -171,7 +171,7 @@ class MainActivity : ComponentActivity() {
                                     }
                                 },
                                 onLogout={scope.launch{try{api.logout()}catch(_:Exception){};role="";loggedIn=false;verified=false;employee=Employee();page="login"}}
-                            ) else LoginScreen(onLogin={_,_->},onActivate={page="activation"})
+                            ) else LoginScreen(onLogin={_,_,_->},onActivate={page="activation"})
                             "directory" -> if(role=="admin") DirectoryScreen(employees, onReload = ::syncDirectory,
                                 onNew = { editing = Employee(); page = "editor" },
                                 onEdit = { editing = it; page = "editor" },
@@ -179,10 +179,10 @@ class MainActivity : ComponentActivity() {
                                 onActive = { e,active -> scope.launch { busy=true;error="";try { api.changeActive(e, active); syncDirectory() } catch(t:Exception){error=t.message ?: "No se pudo actualizar"} finally {busy=false} } },
                                 onInvite = { e -> scope.launch {busy=true;error="";try { invitation=api.inviteEmployee(e) } catch(t:Exception){error=t.message?:"Error al crear acceso"} finally {busy=false}} },
                                 onLogout = { scope.launch { try { api.logout() } catch(_:Exception){}; role=""; loggedIn=false; verified=false; employee=Employee(); employees=emptyList(); page="login" } })
-                            else LoginScreen(onLogin={_,_->},onActivate={page="activation"})
+                            else LoginScreen(onLogin={_,_,_->},onActivate={page="activation"})
                             "editor" -> if(role=="admin") EmployeeEditor(editing, onCancel={page="directory"}, onSave={ e ->
                                 scope.launch { busy=true; error=""; try { api.save(e);page="directory";syncDirectory() } catch(t:Exception){error=t.message ?: "No se pudo guardar"} finally {busy=false} }
-                            }) else LoginScreen(onLogin={_,_->},onActivate={page="activation"})
+                            }) else LoginScreen(onLogin={_,_,_->},onActivate={page="activation"})
                             "settings" -> SettingsScreen(url, { url = it }, onSave = {
                                 preferences.edit().putString("api_url",url.trimEnd('/')).apply()
                                 refreshKey++ ;page="home"
@@ -282,15 +282,23 @@ private fun QrCode(content:String){
 }
 
 @Composable
-private fun LoginScreen(onLogin:(String,String)->Unit, onActivate:()->Unit) {
+private fun LoginScreen(onLogin:(String,String,String)->Unit, onActivate:()->Unit) {
     var email by remember { mutableStateOf("") };var password by remember { mutableStateOf("") }
+    var selectedRole by remember { mutableStateOf("employee") }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),verticalArrangement=Arrangement.spacedBy(18.dp)) {
         Icon(Icons.Default.AdminPanelSettings, null, tint=Forest,modifier=Modifier.size(48.dp))
         Text("Iniciar sesión",fontSize=25.sp,fontWeight=FontWeight.Bold,color=Forest)
         Text("Empleados: accede a tu propia credencial. Administradores: gestiona el directorio.",color=Leaf)
+        Text("Tipo de acceso",fontWeight=FontWeight.Bold,color=Forest)
+        Row(horizontalArrangement=Arrangement.spacedBy(16.dp),verticalAlignment=Alignment.CenterVertically){
+            RadioButton(selected=selectedRole=="employee",onClick={selectedRole="employee"})
+            Text("Empleado",modifier=Modifier.clickable{selectedRole="employee"})
+            RadioButton(selected=selectedRole=="admin",onClick={selectedRole="admin"})
+            Text("Administrador",modifier=Modifier.clickable{selectedRole="admin"})
+        }
         OutlinedTextField(email,{email=it},label={Text("Correo de tu cuenta")},singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Email),modifier=Modifier.fillMaxWidth())
         OutlinedTextField(password,{password=it},label={Text("Contraseña")},singleLine=true,visualTransformation=PasswordVisualTransformation(),modifier=Modifier.fillMaxWidth())
-        Button(onClick={onLogin(email,password)},enabled=email.contains("@")&&password.isNotBlank(),modifier=Modifier.fillMaxWidth()){ Text("Iniciar sesión") }
+        Button(onClick={onLogin(email,password,selectedRole)},enabled=email.contains("@")&&password.isNotBlank(),modifier=Modifier.fillMaxWidth()){ Text("Iniciar sesión") }
         OutlinedButton(onClick=onActivate,modifier=Modifier.fillMaxWidth()){Text("Activar cuenta de empleado")}
         Text("El administrador proporciona un código de activación individual. Nunca compartas tu contraseña.",fontSize=12.sp,color=Leaf)
     }
