@@ -39,7 +39,7 @@ internal class SecureSessionStore(context: Context) {
         prefs.edit().putString("encrypted_refresh", Base64.encodeToString(packed, Base64.NO_WRAP)).apply()
     }
 
-    fun read(): String? = try {
+    fun read(): String? { return try {
         val packed = Base64.decode(prefs.getString("encrypted_refresh", null) ?: return null, Base64.NO_WRAP)
         if (packed.size < 29) throw IllegalStateException("Invalid encrypted credentials")
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
@@ -49,7 +49,7 @@ internal class SecureSessionStore(context: Context) {
     } catch (_: Exception) {
         clear()
         null
-    }
+    } }
 
     fun clear() { prefs.edit().remove("encrypted_refresh").apply() }
 }
