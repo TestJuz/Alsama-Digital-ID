@@ -52,8 +52,9 @@ class ApiClient(private val urlProvider: () -> String) {
     suspend fun publicStaff(slug: String): Employee = request("/v1/public/staff/${encode(slug)}").let {
         Employee.fromJson(it.optJSONObject("employee") ?: it)
     }
-    suspend fun login(email: String, password: String): AuthSession {
-        val response = request("/v1/auth/login", "POST", JSONObject().put("email", email.trim()).put("password", password))
+    suspend fun login(email: String, password: String, role: String): AuthSession {
+        require(role == "admin" || role == "employee") { "Selecciona el tipo de cuenta." }
+        val response = request("/v1/auth/login", "POST", JSONObject().put("email", email.trim()).put("password", password).put("role",role))
         val token = response.optString("accessToken").ifBlank { response.optString("token") }
         val role = response.optString("role")
         if (token.isBlank() || role !in listOf("admin", "employee")) throw ApiException(500, "El servidor no devolvió una sesión válida.")
