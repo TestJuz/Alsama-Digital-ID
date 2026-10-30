@@ -1,0 +1,6 @@
+CREATE TABLE IF NOT EXISTS employees (id TEXT PRIMARY KEY,slug TEXT NOT NULL UNIQUE,full_name TEXT NOT NULL,job_title TEXT NOT NULL,email TEXT NOT NULL,phone TEXT NOT NULL,photo_url TEXT,active INTEGER NOT NULL DEFAULT 1 CHECK(active IN(0,1)),public_visible INTEGER NOT NULL DEFAULT 0 CHECK(public_visible IN(0,1)),created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS admins (id TEXT PRIMARY KEY,email TEXT NOT NULL UNIQUE,password_hash TEXT NOT NULL,password_salt TEXT NOT NULL,created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY,admin_id TEXT NOT NULL REFERENCES admins(id),expires_at TEXT NOT NULL,created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS login_attempts (key TEXT PRIMARY KEY,attempts INTEGER NOT NULL,window_start INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_sessions_exp ON sessions(expires_at);
+INSERT OR IGNORE INTO employees (id,slug,full_name,job_title,email,phone,photo_url,active,public_visible,created_at,updated_at) VALUES ('c370974e-7d32-44dc-89a8-c3a3a19ca8f2','sebastian-melendez-rodriguez','Sebastian Melendez Rodriguez','Ejecutivo en ventas','Sebastian.melendez@alsamatourscr.com','+506 7118 0081',NULL,1,1,datetime('now'),datetime('now'));
