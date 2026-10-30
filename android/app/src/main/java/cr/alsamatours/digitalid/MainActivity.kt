@@ -1,0 +1,319 @@
+package cr.alsamatours.digitalid
+
+import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.net.Uri
+import android.nfc.NfcAdapter
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.lifecycle.lifecycleScope
+import com.google.zxing.BarcodeFormat
+import com.google.zxing.qrcode.QRCodeWriter
+import cr.alsamatours.digitalid.model.Employee
+import cr.alsamatours.digitalid.net.ApiClient
+import kotlinx.coroutines.launch
+import java.net.URLEncoder
+
+private val Forest = Color(0xFF123D30)
+private val Mint = Color(0xFFD5EADD)
+private val Light = Color(0xFFF4F8F5)
+private val Leaf = Color(0xFF327453)
+
+class MainActivity : ComponentActivity() {
+    private val preferences by lazy { getSharedPreferences("alsama_config", MODE_PRIVATE) }
+    private val api by lazy { ApiClient { preferences.getString("api_url", BuildConfig.API_BASE_URL).orEmpty() } }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        window.statusBarColor = android.graphics.Color.rgb(18,61,48)
+        setContent {
+            var page by remember { mutableStateOf("home") }
+            var employee by remember { mutableStateOf(Employee.sample) }
+            var verified by remember { mutableStateOf(false) }
+            var employees by remember { mutableStateOf<List<Employee>>(emptyList()) }
+            var editing by remember { mutableStateOf(Employee()) }
+            var loggedIn by remember { mutableStateOf(false) }
+            var error by remember { mutableStateOf("") }
+            var busy by remember { mutableStateOf(false) }
+            var refreshKey by remember { mutableIntStateOf(0) }
+            var url by remember { mutableStateOf(preferences.getString("api_url", BuildConfig.API_BASE_URL).orEmpty()) }
+            val scope = rememberCoroutineScope()
+            val apiOrigin = url.trimEnd('/')
+
+            fun syncProfile(slug: String = "sebastian-melendez-rodriguez") {
+                scope.launch {
+                    busy = true; error = ""; verified = false
+                    try { employee = api.publicStaff(slug); verified = true }
+                    catch (t: Exception) { error = t.message ?: "No se puede contactar la API" }
+                    finally { busy = false }
+                }
+            }
+            fun syncDirectory() {
+                scope.launch {
+                    busy = true; error = ""
+                    try { employees = api.listEmployees() }
+                    catch (t: Exception) { error = t.message ?: "Error al consultar empleados" }
+                    finally { busy = false }
+                }
+            }
+            fun openProfile(item: Employee, serverVerified: Boolean = false) {
+                employee = item; verified = serverVerified; page = "home"
+                syncProfile(item.slug)
+            }
+            LaunchedEffect(url, refreshKey) {
+                if (page == "home" && url.startsWith("https://")) syncProfile(employee.slug)
+            }
+
+            MaterialTheme(colorScheme = lightColorScheme(primary = Forest, secondary = Leaf, background = Light, surface = Color.White)) {
+                Scaffold(
+                    topBar = {
+                        Surface(color = Forest) {
+                            Row(Modifier.fillMaxWidth().statusBarsPadding().height(60.dp).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Text("ALSAMA", color = Color.White, fontWeight = FontWeight.Black, fontSize = 20.sp, letterSpacing = 2.sp)
+                                Text("  DIGITAL ID", color = Mint, fontSize = 12.sp)
+                                Spacer(Modifier.weight(1f))
+                                IconButton(onClick = { page = "settings" }) {
+                                    Icon(Icons.Default.Settings, contentDescription = "Ajustes", tint = Color.White)
+                                }
+                            }
+                        }
+                    },
+                    bottomBar = {
+                        NavigationBar(containerColor = Color.White) {
+                            NavigationBarItem(selected = page == "home", onClick = { page = "home"; if (url.isNotBlank()) syncProfile(employee.slug) }, icon = { Icon(Icons.Default.Badge, null) }, label = { Text("Credencial") })
+                            NavigationBarItem(selected = page in listOf("login","directory","editor"), onClick = { page = if (loggedIn) "directory" else "login"; if (loggedIn) syncDirectory() }, icon = { Icon(Icons.Default.SupervisorAccount, null) }, label = { Text("Administración") })
+                        }
+                    }
+                ) { padding ->
+                    Column(Modifier.fillMaxSize().padding(padding).background(Light)) {
+                        if (error.isNotBlank()) {
+                            Surface(color = Color(0xFFFFE9E5), modifier = Modifier.fillMaxWidth()) {
+                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(10.dp)) {
+                                    Text(error, color = Color(0xFF9E322A), modifier = Modifier.weight(1f))
+                                    IconButton(onClick = { error = "" }) { Icon(Icons.Default.Close, "Cerrar") }
+                                }
+                            }
+                        }
+                        if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+                        when (page) {
+                            "home" -> CredentialScreen(employee, verified, apiOrigin,
+                                onRefresh = { syncProfile(employee.slug) },
+                                onShare = { link -> startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply { type="text/plain"; putExtra(Intent.EXTRA_TEXT, link) }, "Compartir credencial")) },
+                                onSaveContact = { e ->
+                                    val profile = "$apiOrigin/v1/public/staff/${e.slug}/contact.vcf"
+                                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(profile)))
+                                },
+                                onNfc = { link ->
+                                    preferences.edit().putString("nfc_url", link).apply()
+                                    error = "Enlace configurado para lectores NFC compatibles. No funciona con todos los teléfonos."
+                                }
+                            )
+                            "login" -> LoginScreen(onLogin = { email, password ->
+                                scope.launch {
+                                    busy = true;error = ""
+                                    try { api.login(email,password); loggedIn = true; page = "directory"; syncDirectory() }
+                                    catch (t:Exception){error = t.message ?: "Error de inicio de sesión"}
+                                    finally {busy=false}
+                                }
+                            })
+                            "directory" -> DirectoryScreen(employees, onReload = ::syncDirectory,
+                                onNew = { editing = Employee(); page = "editor" },
+                                onEdit = { editing = it; page = "editor" },
+                                onOpen = { openProfile(it) },
+                                onActive = { e,active -> scope.launch { busy=true;error="";try { api.changeActive(e, active); syncDirectory() } catch(t:Exception){error=t.message ?: "No se pudo actualizar"} finally {busy=false} } },
+                                onLogout = { scope.launch { try { api.logout() } catch(_:Exception){}; loggedIn=false; page="login" } })
+                            "editor" -> EmployeeEditor(editing, onCancel={page="directory"}, onSave={ e ->
+                                scope.launch { busy=true; error=""; try { api.save(e);page="directory";syncDirectory() } catch(t:Exception){error=t.message ?: "No se pudo guardar"} finally {busy=false} }
+                            })
+                            "settings" -> SettingsScreen(url, { url = it }, onSave = {
+                                preferences.edit().putString("api_url",url.trimEnd('/')).apply()
+                                refreshKey++ ;page="home"
+                            }, onBack={page="home"}, nfcSupported = NfcAdapter.getDefaultAdapter(this@MainActivity) != null)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CredentialScreen(employee: Employee, verified: Boolean, origin: String, onRefresh: () -> Unit, onShare: (String) -> Unit, onSaveContact: (Employee) -> Unit, onNfc: (String) -> Unit) {
+    val link = "$origin/p/${employee.slug}"
+    val canShare = verified && employee.active && employee.publicVisible && origin.startsWith("https://")
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(15.dp)) {
+        Text("Identificación corporativa", color = Forest, fontWeight = FontWeight.Bold, fontSize = 22.sp)
+        Text("Alsama Tours · Costa Rica", color=Leaf)
+        Card(colors=CardDefaults.cardColors(containerColor=Forest), shape=RoundedCornerShape(24.dp), modifier=Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(23.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                BrandLogo()
+                Text("ALSAMA TOURS", fontSize=17.sp, fontWeight=FontWeight.Black, letterSpacing=3.sp, color=Mint)
+                Spacer(Modifier.height(22.dp))
+                Portrait(employee)
+                Spacer(Modifier.height(14.dp))
+                Text(employee.fullName, fontSize=22.sp, textAlign=TextAlign.Center, fontWeight=FontWeight.Bold, color=Color.White)
+                Text(employee.jobTitle, fontSize=16.sp, textAlign=TextAlign.Center, color=Mint)
+                Spacer(Modifier.height(17.dp))
+                HorizontalDivider(color=Color.White.copy(alpha=0.2f))
+                Spacer(Modifier.height(16.dp))
+                Text(if (verified && employee.active) "EMPLEADO ACTIVO · VERIFICADO" else "VISTA PREVIA · SIN VERIFICAR", color=if(verified) Mint else Color(0xFFFFD59A), fontSize=12.sp, fontWeight=FontWeight.Bold)
+                if (canShare) {
+                    Spacer(Modifier.height(16.dp))
+                    QrCode(link)
+                    Spacer(Modifier.height(8.dp))
+                    Text("Escanea para verificar y guardar contacto", fontSize=12.sp, color=Mint, textAlign=TextAlign.Center)
+                }
+            }
+        }
+        if (!verified) {
+            Text("Esta tarjeta es una vista previa. Sin conexión con la API no se puede verificar la relación laboral ni emitir un QR válido.",fontSize=13.sp,color=Color(0xFF855B14),textAlign=TextAlign.Center)
+        }
+        if (employee.email.isNotBlank()) Text(employee.email, color=Forest, fontSize=14.sp)
+        if (employee.phone.isNotBlank()) Text(employee.phone, color=Leaf)
+        Button(onClick=onRefresh, modifier=Modifier.fillMaxWidth()) { Icon(Icons.Default.Refresh,null); Spacer(Modifier.width(8.dp)); Text("Actualizar credencial") }
+        if (canShare) {
+            OutlinedButton(onClick={onShare(link)}, modifier=Modifier.fillMaxWidth()) { Icon(Icons.Default.Share,null); Spacer(Modifier.width(8.dp));Text("Compartir enlace") }
+            OutlinedButton(onClick={onSaveContact(employee)},modifier=Modifier.fillMaxWidth()){ Icon(Icons.Default.PersonAdd,null);Spacer(Modifier.width(8.dp));Text("Guardar contacto") }
+            OutlinedButton(onClick={onNfc(link)},modifier=Modifier.fillMaxWidth()){ Icon(Icons.Default.Nfc,null);Spacer(Modifier.width(8.dp));Text("Habilitar enlace NFC experimental") }
+        }
+    }
+}
+
+@Composable
+private fun Portrait(employee: Employee) {
+    val context=LocalContext.current
+    val bitmap = remember(employee.slug) {
+        if (employee.slug == "sebastian-melendez-rodriguez") runCatching {
+            context.assets.open("sebastian.jpg").use { BitmapFactory.decodeStream(it) }
+        }.getOrNull() else null
+    }
+    Box(Modifier.size(118.dp).background(Mint, CircleShape), contentAlignment=Alignment.Center) {
+        if(bitmap!=null) Image(bitmap.asImageBitmap(),contentDescription="Fotografía del empleado", contentScale=ContentScale.Crop,modifier=Modifier.fillMaxSize())
+        else Icon(Icons.Default.Person,null,tint=Forest,modifier=Modifier.size(68.dp))
+    }
+}
+
+@Composable
+private fun QrCode(content:String){
+    val bitmap=remember(content){runCatching {
+        val matrix=QRCodeWriter().encode(content,BarcodeFormat.QR_CODE,320,320)
+        val pixels=IntArray(320*320){ i -> if(matrix[i%320,i/320]) android.graphics.Color.BLACK else android.graphics.Color.WHITE }
+        Bitmap.createBitmap(pixels,320,320,Bitmap.Config.ARGB_8888)
+    }.getOrNull()}
+    if(bitmap!=null) Image(bitmap.asImageBitmap(),"QR de verificación",modifier=Modifier.size(185.dp).background(Color.White, RoundedCornerShape(8.dp)).padding(9.dp))
+}
+
+@Composable
+private fun LoginScreen(onLogin:(String,String)->Unit) {
+    var email by remember { mutableStateOf("") };var password by remember { mutableStateOf("") }
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),verticalArrangement=Arrangement.spacedBy(18.dp)) {
+        Icon(Icons.Default.AdminPanelSettings, null, tint=Forest,modifier=Modifier.size(48.dp))
+        Text("Acceso administrativo",fontSize=25.sp,fontWeight=FontWeight.Bold,color=Forest)
+        Text("Solo personal autorizado puede administrar empleados.",color=Leaf)
+        OutlinedTextField(email,{email=it},label={Text("Correo administrador")},singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Email),modifier=Modifier.fillMaxWidth())
+        OutlinedTextField(password,{password=it},label={Text("Contraseña")},singleLine=true,visualTransformation=PasswordVisualTransformation(),modifier=Modifier.fillMaxWidth())
+        Button(onClick={onLogin(email,password)},enabled=email.contains("@")&&password.isNotBlank(),modifier=Modifier.fillMaxWidth()){ Text("Iniciar sesión") }
+        Text("La cuenta administrativa se configura en Cloudflare, no está integrada en el APK.",fontSize=12.sp,color=Leaf)
+    }
+}
+
+@Composable
+private fun DirectoryScreen(employees:List<Employee>, onReload:()->Unit, onNew:()->Unit,onEdit:(Employee)->Unit,onOpen:(Employee)->Unit,onActive:(Employee,Boolean)->Unit,onLogout:()->Unit) {
+    Column(Modifier.fillMaxSize().padding(16.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
+        Row(verticalAlignment=Alignment.CenterVertically){Text("Empleados",fontSize=26.sp,fontWeight=FontWeight.Bold,color=Forest,modifier=Modifier.weight(1f));IconButton(onClick=onReload){Icon(Icons.Default.Refresh,"Actualizar")};IconButton(onClick=onLogout){Icon(Icons.Default.Logout,"Salir")}}
+        Button(onClick=onNew,modifier=Modifier.fillMaxWidth()){Icon(Icons.Default.Add,null);Spacer(Modifier.width(8.dp));Text("Agregar empleado")}
+        if(employees.isEmpty()) Text("Aún no hay empleados cargados o el directorio no está disponible.",color=Leaf)
+        LazyColumn(verticalArrangement=Arrangement.spacedBy(10.dp)) {
+            items(employees,key={it.id}){e->
+                Card(shape=RoundedCornerShape(14.dp),colors=CardDefaults.cardColors(containerColor=Color.White)){
+                    Column(Modifier.fillMaxWidth().padding(14.dp),verticalArrangement=Arrangement.spacedBy(8.dp)){
+                        Text(e.fullName,fontWeight=FontWeight.Bold,color=Forest)
+                        Text(e.jobTitle,color=Leaf)
+                        Text(if(e.active) "Activo" else "Inactivo",color=if(e.active) Leaf else Color.Red)
+                        Row(verticalAlignment=Alignment.CenterVertically){
+                            TextButton(onClick={onEdit(e)}){Text("Editar")}
+                            TextButton(onClick={onOpen(e)}){Text("Credencial")}
+                            Spacer(Modifier.weight(1f))
+                            Switch(checked=e.active,onCheckedChange={onActive(e,it)})
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun EmployeeEditor(initial:Employee,onCancel:()->Unit,onSave:(Employee)->Unit){
+    var name by remember(initial.id){mutableStateOf(initial.fullName)}
+    var slug by remember(initial.id){mutableStateOf(initial.slug)}
+    var job by remember(initial.id){mutableStateOf(initial.jobTitle)}
+    var email by remember(initial.id){mutableStateOf(initial.email)}
+    var phone by remember(initial.id){mutableStateOf(initial.phone)}
+    var photo by remember(initial.id){mutableStateOf(initial.photoUrl)}
+    var active by remember(initial.id){mutableStateOf(initial.active)}
+    var isPublic by remember(initial.id){mutableStateOf(initial.publicVisible)}
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),verticalArrangement=Arrangement.spacedBy(12.dp)){
+        Text(if(initial.id.isBlank()) "Nuevo empleado" else "Editar empleado",fontSize=25.sp,fontWeight=FontWeight.Bold,color=Forest)
+        OutlinedTextField(name,{name=it},label={Text("Nombre completo")},modifier=Modifier.fillMaxWidth())
+        OutlinedTextField(slug,{slug=it},label={Text("Identificador (slug)")},modifier=Modifier.fillMaxWidth(),singleLine=true)
+        OutlinedTextField(job,{job=it},label={Text("Puesto")},modifier=Modifier.fillMaxWidth())
+        OutlinedTextField(email,{email=it},label={Text("Correo")},modifier=Modifier.fillMaxWidth(),keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Email))
+        OutlinedTextField(phone,{phone=it},label={Text("Teléfono")},modifier=Modifier.fillMaxWidth(),keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Phone))
+        OutlinedTextField(photo,{photo=it},label={Text("URL HTTPS de fotografía")},modifier=Modifier.fillMaxWidth())
+        Row(verticalAlignment=Alignment.CenterVertically){Text("Empleado activo",modifier=Modifier.weight(1f));Switch(active,{active=it})}
+        Row(verticalAlignment=Alignment.CenterVertically){Text("Contacto visible públicamente",modifier=Modifier.weight(1f));Switch(isPublic,{isPublic=it})}
+        Button(onClick={onSave(initial.copy(slug=slug,fullName=name,jobTitle=job,email=email,phone=phone,photoUrl=photo,active=active,publicVisible=isPublic))},
+            enabled=name.isNotBlank()&&job.isNotBlank()&&email.contains("@")&&slug.matches(Regex("[a-z0-9-]+")),modifier=Modifier.fillMaxWidth()){Text("Guardar cambios")}
+        OutlinedButton(onClick=onCancel,modifier=Modifier.fillMaxWidth()){Text("Cancelar")}
+    }
+}
+
+@Composable
+private fun SettingsScreen(url:String,onUrl:(String)->Unit,onSave:()->Unit,onBack:()->Unit,nfcSupported:Boolean){
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),verticalArrangement=Arrangement.spacedBy(16.dp)){
+        Text("Configuración",fontSize=25.sp,fontWeight=FontWeight.Bold,color=Forest)
+        Text("Servidor de Alsama Digital ID",color=Forest,fontWeight=FontWeight.Bold)
+        OutlinedTextField(url,onUrl,modifier=Modifier.fillMaxWidth(),label={Text("URL HTTPS de Cloudflare Worker")},placeholder={Text("https://...workers.dev")},singleLine=true)
+        Text("La URL es pública. Las contraseñas y tokens nunca se incluyen en el proyecto.",fontSize=12.sp,color=Leaf)
+        Button(onClick=onSave,enabled=url.startsWith("https://"),modifier=Modifier.fillMaxWidth()){Text("Guardar servidor")}
+        Text("NFC disponible: ${if(nfcSupported) "Sí, lector/emulador compatible por comprobar" else "No en este dispositivo"}",color=Leaf)
+        OutlinedButton(onClick=onBack,modifier=Modifier.fillMaxWidth()){Text("Volver")}
+    }
+}
+
+@Composable
+private fun BrandLogo(){
+    val context=LocalContext.current
+    val bitmap=remember { runCatching { context.assets.open("tortuga.png").use { BitmapFactory.decodeStream(it) } }.getOrNull() }
+    if(bitmap!=null) Image(bitmap.asImageBitmap(),"Logo Alsama Tours",modifier=Modifier.size(88.dp),contentScale=ContentScale.Fit)
+}

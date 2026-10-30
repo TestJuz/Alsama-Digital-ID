@@ -1,0 +1,10 @@
+# Android / local state
+.gradle/
+**/build/
+.idea/
+*.iml
+local.properties
+*.keystore
+*.jks
+.env
+.DS_Store
