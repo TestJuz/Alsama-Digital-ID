@@ -1,0 +1,17 @@
+{
+  "name": "alsama-digital-id-api",
+  "main": "src/index.js",
+  "compatibility_date": "2026-10-30",
+  "workers_dev": true,
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "alsama-digital-id",
+      "database_id": "c4168546-3f58-4702-9ba6-2ba7533e3088",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "vars": {
+    "CORS_ORIGIN": "https://alsamatourscr.com"
+  }
+}
