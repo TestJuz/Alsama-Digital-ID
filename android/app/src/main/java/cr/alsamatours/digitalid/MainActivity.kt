@@ -167,6 +167,7 @@ class MainActivity : ComponentActivity() {
                             "home" -> if (role.isNotBlank()) CredentialScreen(employee, verified, apiOrigin,
                                 onRefresh = { syncProfile(employee.slug) },
                                 onShare = { link -> startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply { type="text/plain"; putExtra(Intent.EXTRA_TEXT, link) }, "Compartir credencial")) },
+                                onOpenSocial = { address -> startActivity(Intent(Intent.ACTION_VIEW,Uri.parse(address))) },
                                 onSaveContact = { e ->
                                     val profile = "$apiOrigin/v1/public/staff/${e.slug}/contact.vcf"
                                     startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(profile)))
@@ -251,7 +252,7 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun CredentialScreen(employee: Employee, verified: Boolean, origin: String, onRefresh: () -> Unit, onShare: (String) -> Unit, onSaveContact: (Employee) -> Unit, onNfc: (String) -> Unit) {
+private fun CredentialScreen(employee: Employee, verified: Boolean, origin: String, onRefresh: () -> Unit, onShare: (String) -> Unit, onOpenSocial: (String) -> Unit, onSaveContact: (Employee) -> Unit, onNfc: (String) -> Unit) {
     val link = "$origin/p/${employee.slug}"
     val canShare = verified && employee.active && employee.publicVisible && origin.startsWith("https://")
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(15.dp)) {
@@ -283,6 +284,12 @@ private fun CredentialScreen(employee: Employee, verified: Boolean, origin: Stri
         }
         if (employee.email.isNotBlank()) Text(employee.email, color=Forest, fontSize=14.sp)
         if (employee.phone.isNotBlank()) Text(employee.phone, color=Leaf)
+        Text("Conecta con Alsama Tours",color=Forest,fontWeight=FontWeight.SemiBold)
+        Row(horizontalArrangement=Arrangement.spacedBy(4.dp),verticalAlignment=Alignment.CenterVertically){
+            TextButton(onClick={onOpenSocial("https://www.instagram.com/alsama_tours_cr/")}){Text("Instagram",fontSize=12.sp)}
+            TextButton(onClick={onOpenSocial("https://www.facebook.com/AlsamaToursCR")}){Text("Facebook",fontSize=12.sp)}
+            TextButton(onClick={onOpenSocial("https://alsamatourscr.com/")}){Text("Sitio web",fontSize=12.sp)}
+        }
         Button(onClick=onRefresh, modifier=Modifier.fillMaxWidth()) { Icon(Icons.Default.Refresh,null); Spacer(Modifier.width(8.dp)); Text("Actualizar credencial") }
         if (canShare) {
             OutlinedButton(onClick={onShare(link)}, modifier=Modifier.fillMaxWidth()) { Icon(Icons.Default.Share,null); Spacer(Modifier.width(8.dp));Text("Compartir enlace") }
