@@ -57,12 +57,14 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         window.statusBarColor = android.graphics.Color.rgb(18,61,48)
         setContent {
-            var page by remember { mutableStateOf("home") }
-            var employee by remember { mutableStateOf(Employee.sample) }
+            var page by remember { mutableStateOf("login") }
+            var employee by remember { mutableStateOf(Employee()) }
             var verified by remember { mutableStateOf(false) }
             var employees by remember { mutableStateOf<List<Employee>>(emptyList()) }
             var editing by remember { mutableStateOf(Employee()) }
             var loggedIn by remember { mutableStateOf(false) }
+            var role by remember { mutableStateOf<String?>(null) }
+            var notice by remember { mutableStateOf("") }
             var error by remember { mutableStateOf("") }
             var busy by remember { mutableStateOf(false) }
             var refreshKey by remember { mutableIntStateOf(0) }
@@ -70,15 +72,19 @@ class MainActivity : ComponentActivity() {
             val scope = rememberCoroutineScope()
             val apiOrigin = url.trimEnd('/')
 
-            fun syncProfile(slug: String = "sebastian-melendez-rodriguez") {
+            fun syncProfile(slug: String = employee.slug) {
+                if (role == null) return
                 scope.launch {
                     busy = true; error = ""; verified = false
-                    try { employee = api.publicStaff(slug); verified = true }
-                    catch (t: Exception) { error = t.message ?: "No se puede contactar la API" }
+                    try {
+                        employee = if (role == "employee") api.myCredential() else api.publicStaff(slug)
+                        verified = employee.active
+                    } catch (t: Exception) { error = t.message ?: "No se puede contactar la API" }
                     finally { busy = false }
                 }
             }
             fun syncDirectory() {
+                if (role != "admin") return
                 scope.launch {
                     busy = true; error = ""
                     try { employees = api.listEmployees() }
@@ -86,12 +92,15 @@ class MainActivity : ComponentActivity() {
                     finally { busy = false }
                 }
             }
-            fun openProfile(item: Employee, serverVerified: Boolean = false) {
-                employee = item; verified = serverVerified; page = "home"
-                syncProfile(item.slug)
+            fun openProfile(item: Employee) {
+                if (role != "admin") return
+                employee = item
+                verified = item.active
+                page = "home"
+                if (item.publicVisible) syncProfile(item.slug)
             }
             LaunchedEffect(url, refreshKey) {
-                if (page == "home" && url.startsWith("https://")) syncProfile(employee.slug)
+                if (page == "home" && role != null && url.startsWith("https://")) syncProfile(employee.slug)
             }
 
             MaterialTheme(colorScheme = lightColorScheme(primary = Forest, secondary = Leaf, background = Light, surface = Color.White)) {
@@ -102,16 +111,48 @@ class MainActivity : ComponentActivity() {
                                 Text("ALSAMA", color = Color.White, fontWeight = FontWeight.Black, fontSize = 20.sp, letterSpacing = 2.sp)
                                 Text("  DIGITAL ID", color = Mint, fontSize = 12.sp)
                                 Spacer(Modifier.weight(1f))
-                                IconButton(onClick = { page = "settings" }) {
-                                    Icon(Icons.Default.Settings, contentDescription = "Ajustes", tint = Color.White)
+                                if (role == "admin") {
+                                    IconButton(onClick = { page = "settings" }) {
+                                        Icon(Icons.Default.Settings, contentDescription = "Ajustes", tint = Color.White)
+                                    }
                                 }
                             }
                         }
                     },
                     bottomBar = {
-                        NavigationBar(containerColor = Color.White) {
-                            NavigationBarItem(selected = page == "home", onClick = { page = "home"; if (url.isNotBlank()) syncProfile(employee.slug) }, icon = { Icon(Icons.Default.Badge, null) }, label = { Text("Credencial") })
-                            NavigationBarItem(selected = page in listOf("login","directory","editor"), onClick = { page = if (loggedIn) "directory" else "login"; if (loggedIn) syncDirectory() }, icon = { Icon(Icons.Default.SupervisorAccount, null) }, label = { Text("Administración") })
+                        if (role != null) {
+                            NavigationBar(containerColor = Color.White) {
+                                NavigationBarItem(
+                                    selected = page == "home",
+                                    onClick = { page = "home"; if (url.isNotBlank()) syncProfile(employee.slug) },
+                                    icon = { Icon(Icons.Default.Badge, null) },
+                                    label = { Text("Credencial") }
+                                )
+                                if (role == "admin") NavigationBarItem(
+                                    selected = page in listOf("directory", "editor"),
+                                    onClick = { page = "directory"; syncDirectory() },
+                                    icon = { Icon(Icons.Default.SupervisorAccount, null) },
+                                    label = { Text("Administración") }
+                                )
+                                if (role == "employee") NavigationBarItem(
+                                    selected = page == "password",
+                                    onClick = { page = "password" },
+                                    icon = { Icon(Icons.Default.Lock, null) },
+                                    label = { Text("Contraseña") }
+                                )
+                                NavigationBarItem(
+                                    selected = false,
+                                    onClick = {
+                                        scope.launch {
+                                            try { api.logout() } catch (_: Exception) {}
+                                            role = null; loggedIn = false; employee = Employee()
+                                            verified = false; page = "login"
+                                        }
+                                    },
+                                    icon = { Icon(Icons.Default.Logout, null) },
+                                    label = { Text("Salir") }
+                                )
+                            }
                         }
                     }
                 ) { padding ->
@@ -121,6 +162,14 @@ class MainActivity : ComponentActivity() {
                                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(10.dp)) {
                                     Text(error, color = Color(0xFF9E322A), modifier = Modifier.weight(1f))
                                     IconButton(onClick = { error = "" }) { Icon(Icons.Default.Close, "Cerrar") }
+                                }
+                            }
+                        }
+                        if (notice.isNotBlank()) {
+                            Surface(color = Mint, modifier = Modifier.fillMaxWidth()) {
+                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(10.dp)) {
+                                    Text(notice, color = Forest, modifier = Modifier.weight(1f))
+                                    IconButton(onClick = { notice = "" }) { Icon(Icons.Default.Close, "Cerrar aviso") }
                                 }
                             }
                         }
