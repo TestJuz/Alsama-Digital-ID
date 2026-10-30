@@ -136,7 +136,7 @@ class ApiClient(context: Context) {
     suspend fun logout() {
         val refresh=sessionStore.read()
         try {
-            if(refresh!=null) rawRequest("/v1/auth/logout","POST",JSONObject().put("refreshToken",refresh))
+            if(refresh!=null) rawRequest("/v1/auth/logout","POST",JSONObject().put("refreshToken",refresh),authenticated=accessToken!=null)
             else if(accessToken!=null) rawRequest("/v1/auth/logout","POST",JSONObject(),true)
         } finally { clearSession() }
     }
