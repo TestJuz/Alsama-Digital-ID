@@ -98,12 +98,18 @@ else if(method==='POST'&&p==='/v1/auth/activate'){
  const email=v.email.toLowerCase().trim();
  const existingAdmin=await env.DB.prepare('SELECT id FROM admins WHERE lower(email)=?').bind(email).first();
  if(existingAdmin)return error(409,'already_has_access','Este correo ya tiene acceso con contraseña de administrador');
- const invited=await env.DB.prepare('SELECT ei.employee_id,ei.code_hash,ei.expires_at FROM employee_invites ei JOIN employees e ON e.id=ei.employee_id WHERE lower(e.email)=? AND e.active=1').bind(email).first();
+ const invited=await env.DB.prepare('SELECT ei.employee_id,ei.code_hash,ei.expires_at,e.profile_type FROM employee_invites ei JOIN employees e ON e.id=ei.employee_id WHERE lower(e.email)=? AND e.active=1 AND e.profile_type!='driver'').bind(email).first();
  const inputHash=await sha(v.code);
  if(!invited||invited.expires_at<now()||!safeEqual(invited.code_hash,inputHash))return error(403,'invalid_invitation','Código inválido o vencido');
  const salt=rand(),hashed=await hashPassword(v.password,salt),date=now();
- const stored=await env.DB.prepare('INSERT INTO employee_credentials (employee_id,password_hash,password_salt,updated_at) VALUES (?,?,?,?) ON CONFLICT(employee_id) DO UPDATE SET password_hash=excluded.password_hash,password_salt=excluded.password_salt,updated_at=excluded.updated_at').bind(invited.employee_id,hashed,salt,date).run();
- await env.DB.prepare('DELETE FROM employee_sessions WHERE employee_id=?').bind(invited.employee_id).run();
+ if(invited.profile_type==='admin'){
+   // Only a code issued by an already authenticated administrator grants the role.
+   await env.DB.prepare('INSERT INTO admins (id,email,password_hash,password_salt,created_at) VALUES (?,?,?,?,?)').bind(crypto.randomUUID(),email,hashed,salt,date).run();
+ }else{
+   await env.DB.prepare('INSERT INTO employee_credentials (employee_id,password_hash,password_salt,updated_at) VALUES (?,?,?,?) ON CONFLICT(employee_id) DO UPDATE SET password_hash=excluded.password_hash,password_salt=excluded.password_salt,updated_at=excluded.updated_at').bind(invited.employee_id,hashed,salt,date).run();
+   await env.DB.prepare('DELETE FROM employee_sessions WHERE employee_id=?').bind(invited.employee_id).run();
+   await env.DB.prepare('DELETE FROM refresh_sessions WHERE actor_type=? AND actor_id=?').bind('employee',invited.employee_id).run();
+ }
  await env.DB.prepare('DELETE FROM employee_invites WHERE employee_id=? AND code_hash=?').bind(invited.employee_id,inputHash).run();
  response=json({activated:true});
 }
@@ -144,12 +150,28 @@ else if(method==='POST'&&p==='/v1/auth/logout'){
  response=json({loggedOut:true});
 }
 else if(p.startsWith('/v1/admin/')){const a=await auth(req,env);if(!a)return error(401,'unauthorized','Authentication required');if(p==='/v1/admin/employees'&&method==='GET'){const r=await env.DB.prepare('SELECT '+select+' FROM employees ORDER BY full_name').all();response=json({employees:r.results.map(employee)})}
-else if(p==='/v1/admin/employees'&&method==='POST'){const v=await body(req),e=validate(v);if(e)return error(422,'validation_error',e);const id=crypto.randomUUID(),date=now();try{await env.DB.prepare('INSERT INTO employees ('+select+') VALUES (?,?,?,?,?,?,?,?,?,?,?)').bind(id,v.slug,v.fullName,v.jobTitle,v.email,v.phone,v.photoUrl??null,v.active===false?0:1,v.publicVisible===true?1:0,date,date).run()}catch(e){if(String(e).includes('UNIQUE'))return error(409,'duplicate_slug','Employee slug already exists');throw e}response=json({employee:employee(await env.DB.prepare('SELECT '+select+' FROM employees WHERE id=?').bind(id).first())},201)}
+else if(p==='/v1/admin/employees'&&method==='POST'){
+ const v=await body(req),profileType=roleType(v);
+ const id=crypto.randomUUID(),date=now();
+ if(profileType==='driver'){
+   if(typeof v.fullName!=='string'||!v.fullName.trim()||v.fullName.length>120||Object.keys(v).some(k=>!['fullName','profileType'].includes(k)))return error(422,'validation_error','Chofer solo requiere nombre completo');
+   const slug='chofer-'+id.slice(0,8),email='driver-'+id+'@staff.invalid';
+   await env.DB.prepare('INSERT INTO employees ('+select+') VALUES (?,?,?,?,?,?,?,?,?,?,?,?)').bind(id,slug,v.fullName.trim(),'Chofer',email,driverPhone,null,1,1,date,date,'driver').run();
+ }else{
+   const e=validate(v);if(e)return error(422,'validation_error',e);
+   const title=profileType==='admin'?'Administrador':v.jobTitle;
+   try{
+     await env.DB.prepare('INSERT INTO employees ('+select+') VALUES (?,?,?,?,?,?,?,?,?,?,?,?)').bind(id,v.slug,v.fullName,title,v.email,v.phone,v.photoUrl??null,v.active===false?0:1,v.publicVisible===true?1:0,date,date,profileType).run();
+   }catch(err){if(String(err).includes('UNIQUE'))return error(409,'duplicate_employee','Ya existe un empleado con este correo o identificador');throw err}
+ }
+ response=json({employee:employee(await env.DB.prepare('SELECT '+select+' FROM employees WHERE id=?').bind(id).first())},201);
+}
 else if(method==='POST'&&/^\/v1\/admin\/employees\/[0-9a-f-]+\/invite$/.test(p)){
  const id=p.split('/')[4];
  if(!uuidRe.test(id))return error(404,'not_found','Employee not found');
- const staff=await env.DB.prepare('SELECT id,email,active FROM employees WHERE id=?').bind(id).first();
+ const staff=await env.DB.prepare('SELECT id,email,active,profile_type FROM employees WHERE id=?').bind(id).first();
  if(!staff||!staff.active)return error(404,'not_found','Employee not found or inactive');
+ if(staff.profile_type==='driver')return error(422,'driver_requires_personal_email','El chofer requiere un correo personal para activar acceso; el contacto público es corporativo');
  const existingAdmin=await env.DB.prepare('SELECT id FROM admins WHERE lower(email)=?').bind(staff.email.toLowerCase()).first();
  if(existingAdmin)return error(409,'already_has_access','Este empleado ya tiene acceso con su cuenta administradora');
  const code=rand(),expiration=new Date(Date.now()+24*3600000).toISOString();
@@ -158,7 +180,25 @@ else if(method==='POST'&&/^\/v1\/admin\/employees\/[0-9a-f-]+\/invite$/.test(p))
 }
 else{const match=/^\/v1\/admin\/employees\/([0-9a-f-]+)(\/status)?$/.exec(p);if(!match||!uuidRe.test(match[1]))return error(404,'not_found','Resource not found');const id=match[1],old=await env.DB.prepare('SELECT '+select+' FROM employees WHERE id=?').bind(id).first();if(!old)return error(404,'not_found','Employee not found');if(method==='GET'&&!match[2])response=json({employee:employee(old)});
 else if(method==='PATCH'&&match[2]){const v=await body(req);if(Object.keys(v).length!==1||typeof v.active!=='boolean')return error(422,'validation_error','active must be boolean');await env.DB.prepare('UPDATE employees SET active=?,updated_at=? WHERE id=?').bind(v.active?1:0,now(),id).run();response=json({employee:employee(await env.DB.prepare('SELECT '+select+' FROM employees WHERE id=?').bind(id).first())})}
-else if(method==='PUT'&&!match[2]){const v=await body(req),e=validate(v,true);if(e||!Object.keys(v).length)return error(422,'validation_error',e||'empty_update');const fields={slug:'slug',fullName:'full_name',jobTitle:'job_title',email:'email',phone:'phone',photoUrl:'photo_url',active:'active',publicVisible:'public_visible'};const keys=Object.keys(v);try{await env.DB.prepare('UPDATE employees SET '+keys.map(k=>fields[k]+'=?').join(',')+',updated_at=? WHERE id=?').bind(...keys.map(k=>typeof v[k]==='boolean'?(v[k]?1:0):v[k]),now(),id).run()}catch(e){if(String(e).includes('UNIQUE'))return error(409,'duplicate_slug','Employee slug already exists');throw e}response=json({employee:employee(await env.DB.prepare('SELECT '+select+' FROM employees WHERE id=?').bind(id).first())})}
+else if(method==='PUT'&&!match[2]){
+ const v=await body(req);
+ if(v.profileType&&v.profileType!==old.profile_type)return error(409,'immutable_profile_type','El tipo de perfil no se puede cambiar después de crearlo');
+ if(old.profile_type==='driver'){
+   if(Object.keys(v).some(k=>!['fullName','active','publicVisible'].includes(k)))return error(422,'driver_edit','El perfil de chofer solo permite editar nombre y estado');
+   if('fullName'in v&&(typeof v.fullName!=='string'||!v.fullName.trim()||v.fullName.length>120))return error(422,'validation_error','Nombre inválido');
+   if('active'in v&&typeof v.active!=='boolean')return error(422,'validation_error','Estado inválido');
+   if('publicVisible'in v&&typeof v.publicVisible!=='boolean')return error(422,'validation_error','Visibilidad inválida');
+ }else{
+   const e=validate(v,true);if(e)return error(422,'validation_error',e);
+ }
+ if(!Object.keys(v).length)return error(422,'validation_error','empty_update');
+ const fields={slug:'slug',fullName:'full_name',jobTitle:'job_title',email:'email',phone:'phone',photoUrl:'photo_url',active:'active',publicVisible:'public_visible'};
+ const keys=Object.keys(v).filter(k=>k!=='profileType');
+ if(!keys.length)return error(422,'validation_error','empty_update');
+ if(old.profile_type==='admin'&&('email'in v)&&v.email.toLowerCase()!==old.email.toLowerCase())return error(409,'admin_email_immutable','No se puede cambiar el correo de una cuenta administrativa');
+ try{await env.DB.prepare('UPDATE employees SET '+keys.map(k=>fields[k]+'=?').join(',')+',updated_at=? WHERE id=?').bind(...keys.map(k=>typeof v[k]==='boolean'?(v[k]?1:0):v[k]),now(),id).run()}catch(err){if(String(err).includes('UNIQUE'))return error(409,'duplicate_employee','Correo o identificador duplicado');throw err}
+ response=json({employee:employee(await env.DB.prepare('SELECT '+select+' FROM employees WHERE id=?').bind(id).first())});
+}
 else return error(405,'method_not_allowed','Method not allowed')}}
 else{const m=/^\/v1\/public\/staff\/([a-z0-9-]+)(\/contact\.vcf)?$/.exec(p),card=/^\/p\/([a-z0-9-]+)$/.exec(p);if(method!=='GET'||(!m&&!card))return error(404,'not_found','Resource not found');const slug=(m||card)[1];if(!slugRe.test(slug))return error(404,'not_found','Resource not found');const r=await env.DB.prepare('SELECT '+select+' FROM employees WHERE slug=? AND active=1').bind(slug).first();if(!r||!r.public_visible)return error(404,'not_found','Employee not found');if(m&&!m[2])response=json(publicEmployee(r));
 else if(m&&m[2]){if(!r.public_visible)return error(404,'not_found','Contact not publicly available');const lines=['BEGIN:VCARD','VERSION:3.0','FN:'+vcf(r.full_name),'ORG:Alsama Tours Costa Rica','TITLE:'+vcf(r.job_title),'EMAIL;TYPE=WORK:'+vcf(r.email),'TEL;TYPE=WORK:'+vcf(r.phone),'END:VCARD'];response=new Response(lines.join('\r\n')+'\r\n',{headers:{...headers,'Content-Type':'text/vcard; charset=utf-8','Content-Disposition':'attachment; filename="contact.vcf"'}})}
