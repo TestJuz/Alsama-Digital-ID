@@ -11,7 +11,7 @@ import java.net.URL
 
 class ApiException(val status: Int, message: String) : Exception(message)
 
-data class AuthSession(val role: String, val employee: Employee?)
+data class AuthSession(val isAdmin: Boolean, val employee: Employee?)
 data class InvitationCode(val email: String, val code: String, val expiresAt: String)
 
 /** No credential is persisted to disk. App restart requires re-authentication. */
@@ -54,15 +54,13 @@ class ApiClient {
     suspend fun publicStaff(slug: String): Employee = request("/v1/public/staff/${encode(slug)}").let {
         Employee.fromJson(it.optJSONObject("employee") ?: it)
     }
-    suspend fun login(email: String, password: String, role: String): AuthSession {
-        require(role == "admin" || role == "employee") { "Selecciona el tipo de cuenta." }
-        val response = request("/v1/auth/login", "POST", JSONObject().put("email", email.trim()).put("password", password).put("role",role))
+    suspend fun login(email: String, password: String): AuthSession {
+        val response = request("/v1/auth/login", "POST", JSONObject().put("email", email.trim()).put("password", password))
         val token = response.optString("accessToken").ifBlank { response.optString("token") }
-        val role = response.optString("role")
-        if (token.isBlank() || role !in listOf("admin", "employee")) throw ApiException(500, "El servidor no devolvió una sesión válida.")
+        if (token.isBlank() || !response.has("isAdmin")) throw ApiException(500, "El servidor no devolvió una sesión válida.")
         accessToken = token
         val person = response.optJSONObject("employee")?.let(Employee::fromJson)
-        return AuthSession(role, person)
+        return AuthSession(response.optBoolean("isAdmin",false), person)
     }
     suspend fun myCredential(): Employee =
         request("/v1/me", authenticated = true).let { Employee.fromJson(it.getJSONObject("employee")) }
@@ -91,6 +89,7 @@ class ApiClient {
         val arr: JSONArray = json.optJSONArray("employees") ?: json.optJSONArray("items") ?: JSONArray()
         return (0 until arr.length()).mapNotNull { arr.optJSONObject(it)?.let(Employee::fromJson) }
     }
+    suspend fun getEmployee(id: String): Employee = request("/v1/admin/employees/${encode(id)}", authenticated = true).let { Employee.fromJson(it.getJSONObject("employee")) }
     suspend fun save(employee: Employee): Employee {
         val path = if (employee.id.isBlank()) "/v1/admin/employees" else "/v1/admin/employees/${encode(employee.id)}"
         val response = request(path, if (employee.id.isBlank()) "POST" else "PUT", employee.toJson(), true)

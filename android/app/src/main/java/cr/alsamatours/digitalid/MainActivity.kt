@@ -59,6 +59,8 @@ class MainActivity : ComponentActivity() {
         setContent {
             var page by remember { mutableStateOf("login") }
             var employee by remember { mutableStateOf(Employee()) }
+            var ownProfile by remember { mutableStateOf<Employee?>(null) }
+            var signedInEmail by remember { mutableStateOf("") }
             var role by remember { mutableStateOf("") }
             var invitation by remember { mutableStateOf<InvitationCode?>(null) }
             var verified by remember { mutableStateOf(false) }
@@ -74,7 +76,7 @@ class MainActivity : ComponentActivity() {
                 scope.launch {
                     busy = true; error = ""; verified = false
                     try {
-                        employee = if (role == "employee") api.myCredential() else if (role == "admin") api.publicStaff(slug) else throw IllegalStateException("Inicia sesión para ver tu credencial")
+                        employee = if (role == "admin" && employee.id.isNotBlank() && employee.id != ownProfile?.id) api.getEmployee(employee.id) else api.myCredential()
                         verified = true
                     }
                     catch (t: Exception) { error = t.message ?: "No se puede contactar la API" }
@@ -107,8 +109,13 @@ class MainActivity : ComponentActivity() {
                     },
                     bottomBar = {
                         NavigationBar(containerColor = Color.White) {
-                            NavigationBarItem(selected = page == "home", onClick = { if (role.isBlank()) page = "login" else { page = "home"; syncProfile(employee.slug) } }, icon = { Icon(Icons.Default.Badge, null) }, label = { Text("Credencial") })
-                            NavigationBarItem(selected = page in listOf("login","directory","editor","account","activation"), onClick = { page = if (role == "admin") "directory" else if (role == "employee") "account" else "login"; if (role == "admin") syncDirectory() }, icon = { Icon(if (role == "employee") Icons.Default.Person else Icons.Default.SupervisorAccount, null) }, label = { Text(if (role == "employee") "Mi cuenta" else if (role == "admin") "Administración" else "Acceso") })
+                            NavigationBarItem(selected = page == "home", onClick = {
+                                if (role.isBlank()) page = "login"
+                                else if (ownProfile == null) page = if(role=="admin") "directory" else "login"
+                                else { employee = ownProfile!!; page = "home"; syncProfile(ownProfile!!.slug) }
+                            }, icon = { Icon(Icons.Default.Badge, null) }, label = { Text("Mi credencial") })
+                            NavigationBarItem(selected = page in listOf("login","account","activation"), onClick = { page = if(role.isNotBlank()) "account" else "login" }, icon = { Icon(Icons.Default.Person, null) }, label = { Text(if(role.isNotBlank()) "Mi cuenta" else "Acceso") })
+                            if (role == "admin") NavigationBarItem(selected = page in listOf("directory","editor"), onClick = { page = "directory"; syncDirectory() }, icon = { Icon(Icons.Default.SupervisorAccount,null) }, label = { Text("Administración") })
                         }
                     }
                 ) { padding ->
@@ -135,10 +142,20 @@ class MainActivity : ComponentActivity() {
                                     error = "Enlace configurado para lectores NFC compatibles. No funciona con todos los teléfonos."
                                 }
                             )
-                            "login" -> LoginScreen(onLogin = { email, password, requestedRole ->
+                            "login" -> LoginScreen(onLogin = { email, password ->
                                 scope.launch {
                                     busy = true;error = ""
-                                    try { val session=api.login(email,password,requestedRole); role=session.role; loggedIn=role=="admin"; if (role=="admin") { page="directory"; syncDirectory() } else { employee=session.employee ?: api.myCredential(); verified=true; page="home" } }
+                                    try {
+                                        val session=api.login(email,password)
+                                        role=if(session.isAdmin) "admin" else "employee"
+                                        loggedIn=session.isAdmin
+                                        signedInEmail=email.trim()
+                                        ownProfile=session.employee
+                                        employee=session.employee ?: Employee()
+                                        verified=session.employee!=null
+                                        page=if(session.employee!=null) "home" else if(session.isAdmin) "directory" else "login"
+                                        if(session.isAdmin) syncDirectory()
+                                    }
                                     catch (t:Exception){error = t.message ?: "Error de inicio de sesión"}
                                     finally {busy=false}
                                 }
@@ -151,29 +168,29 @@ class MainActivity : ComponentActivity() {
                                     finally { busy=false }
                                 }
                             })
-                            "account" -> if(role=="employee") AccountScreen(
-                                email=employee.email,
+                            "account" -> if(role.isNotBlank()) AccountScreen(
+                                email=signedInEmail,
                                 onChangePassword={current,newPassword ->
                                     scope.launch {
                                         busy=true; error=""
-                                        try { api.changePassword(current,newPassword); role=""; verified=false; employee=Employee(); page="login"; error="Contraseña cambiada. Inicia sesión nuevamente." }
+                                        try { api.changePassword(current,newPassword); role=""; verified=false; employee=Employee(); ownProfile=null; signedInEmail=""; page="login"; error="Contraseña cambiada. Inicia sesión nuevamente." }
                                         catch(t:Exception){error=t.message?:"No se pudo cambiar la contraseña"}
                                         finally {busy=false}
                                     }
                                 },
-                                onLogout={scope.launch{try{api.logout()}catch(_:Exception){};role="";loggedIn=false;verified=false;employee=Employee();page="login"}}
-                            ) else LoginScreen(onLogin={_,_,_->},onActivate={page="activation"})
+                                onLogout={scope.launch{try{api.logout()}catch(_:Exception){};role="";loggedIn=false;verified=false;employee=Employee();ownProfile=null;signedInEmail="";page="login"}}
+                            ) else LoginScreen(onLogin={_,_->},onActivate={page="activation"})
                             "directory" -> if(role=="admin") DirectoryScreen(employees, onReload = ::syncDirectory,
                                 onNew = { editing = Employee(); page = "editor" },
                                 onEdit = { editing = it; page = "editor" },
                                 onOpen = { openProfile(it) },
                                 onActive = { e,active -> scope.launch { busy=true;error="";try { api.changeActive(e, active); syncDirectory() } catch(t:Exception){error=t.message ?: "No se pudo actualizar"} finally {busy=false} } },
                                 onInvite = { e -> scope.launch {busy=true;error="";try { invitation=api.inviteEmployee(e) } catch(t:Exception){error=t.message?:"Error al crear acceso"} finally {busy=false}} },
-                                onLogout = { scope.launch { try { api.logout() } catch(_:Exception){}; role=""; loggedIn=false; verified=false; employee=Employee(); employees=emptyList(); page="login" } })
-                            else LoginScreen(onLogin={_,_,_->},onActivate={page="activation"})
+                                onLogout = { scope.launch { try { api.logout() } catch(_:Exception){}; role=""; loggedIn=false; verified=false; employee=Employee(); ownProfile=null; signedInEmail=""; employees=emptyList(); page="login" } })
+                            else LoginScreen(onLogin={_,_->},onActivate={page="activation"})
                             "editor" -> if(role=="admin") EmployeeEditor(editing, onCancel={page="directory"}, onSave={ e ->
                                 scope.launch { busy=true; error=""; try { api.save(e);page="directory";syncDirectory() } catch(t:Exception){error=t.message ?: "No se pudo guardar"} finally {busy=false} }
-                            }) else LoginScreen(onLogin={_,_,_->},onActivate={page="activation"})
+                            }) else LoginScreen(onLogin={_,_->},onActivate={page="activation"})
                         }
                     }
                 }
@@ -269,23 +286,15 @@ private fun QrCode(content:String){
 }
 
 @Composable
-private fun LoginScreen(onLogin:(String,String,String)->Unit, onActivate:()->Unit) {
+private fun LoginScreen(onLogin:(String,String)->Unit, onActivate:()->Unit) {
     var email by remember { mutableStateOf("") };var password by remember { mutableStateOf("") }
-    var selectedRole by remember { mutableStateOf("employee") }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),verticalArrangement=Arrangement.spacedBy(18.dp)) {
         Icon(Icons.Default.AdminPanelSettings, null, tint=Forest,modifier=Modifier.size(48.dp))
         Text("Iniciar sesión",fontSize=25.sp,fontWeight=FontWeight.Bold,color=Forest)
-        Text("Empleados: accede a tu propia credencial. Administradores: gestiona el directorio.",color=Leaf)
-        Text("Tipo de acceso",fontWeight=FontWeight.Bold,color=Forest)
-        Row(horizontalArrangement=Arrangement.spacedBy(16.dp),verticalAlignment=Alignment.CenterVertically){
-            RadioButton(selected=selectedRole=="employee",onClick={selectedRole="employee"})
-            Text("Empleado",modifier=Modifier.clickable{selectedRole="employee"})
-            RadioButton(selected=selectedRole=="admin",onClick={selectedRole="admin"})
-            Text("Administrador",modifier=Modifier.clickable{selectedRole="admin"})
-        }
+        Text("Entra con tu correo y contraseña. Los permisos de administración se asignan automáticamente.",color=Leaf)
         OutlinedTextField(email,{email=it},label={Text("Correo de tu cuenta")},singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Email),modifier=Modifier.fillMaxWidth())
         OutlinedTextField(password,{password=it},label={Text("Contraseña")},singleLine=true,visualTransformation=PasswordVisualTransformation(),modifier=Modifier.fillMaxWidth())
-        Button(onClick={onLogin(email,password,selectedRole)},enabled=email.contains("@")&&password.isNotBlank(),modifier=Modifier.fillMaxWidth()){ Text("Iniciar sesión") }
+        Button(onClick={onLogin(email,password)},enabled=email.contains("@")&&password.isNotBlank(),modifier=Modifier.fillMaxWidth()){ Text("Iniciar sesión") }
         OutlinedButton(onClick=onActivate,modifier=Modifier.fillMaxWidth()){Text("Activar cuenta de empleado")}
         Text("El administrador proporciona un código de activación individual. Nunca compartas tu contraseña.",fontSize=12.sp,color=Leaf)
     }

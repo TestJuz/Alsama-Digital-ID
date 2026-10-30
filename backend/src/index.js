@@ -17,7 +17,7 @@ const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&
 const vcf=s=>String(s??'').replace(/\\/g,'\\\\').replace(/\r?\n/g,'\\n').replace(/[,;]/g,'\\$&');
 const body=async req=>{if(!req.headers.get('content-type')?.toLowerCase().startsWith('application/json'))throw [415,'unsupported_media_type'];if(Number(req.headers.get('content-length')||0)>16384)throw [413,'payload_too_large'];const s=await req.text();if(s.length>16384)throw [413,'payload_too_large'];try{const v=JSON.parse(s);if(!v||Array.isArray(v)||typeof v!=='object')throw 0;return v}catch{throw [400,'invalid_json']}};
 function validate(v,partial=false){const allowed=['slug','fullName','jobTitle','email','phone','photoUrl','active','publicVisible'];if(Object.keys(v).some(k=>!allowed.includes(k)))return 'unknown_field';for(const k of ['slug','fullName','jobTitle','email','phone']){if(!partial||k in v){if(typeof v[k]!=='string'||!v[k].trim()||v[k].length> (k==='email'?254:120))return 'invalid_'+k}}if('slug'in v&&(!slugRe.test(v.slug)||v.slug.length>90))return 'invalid_slug';if('email'in v&&!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.email))return 'invalid_email';if('phone'in v&&!/^\+?[0-9 ()-]{7,25}$/.test(v.phone))return 'invalid_phone';if('photoUrl'in v&&v.photoUrl!==null&&(typeof v.photoUrl!=='string'||v.photoUrl.length>2048||!/^https:\/\/[^\s]+$/i.test(v.photoUrl)))return 'invalid_photoUrl';for(const k of ['active','publicVisible'])if(k in v&&typeof v[k]!=='boolean')return 'invalid_'+k;return null}
-async function auth(req,env){const m=/^Bearer ([A-Fa-f0-9]{64})$/.exec(req.headers.get('Authorization')||'');if(!m)return null;return env.DB.prepare('SELECT admins.id,admins.email FROM sessions JOIN admins ON sessions.admin_id=admins.id WHERE sessions.token_hash=? AND sessions.expires_at>?').bind(await sha(m[1]),now()).first()}
+async function auth(req,env){const m=/^Bearer ([A-Fa-f0-9]{64})$/.exec(req.headers.get('Authorization')||'');if(!m)return null;return env.DB.prepare('SELECT admins.id,admins.email FROM sessions JOIN admins ON sessions.admin_id=admins.id LEFT JOIN employees ON lower(employees.email)=lower(admins.email) WHERE sessions.token_hash=? AND sessions.expires_at>? AND (employees.id IS NULL OR employees.active=1)').bind(await sha(m[1]),now()).first()}
 
 async function employeeAuth(req,env){
  const m=/^Bearer ([A-Fa-f0-9]{64})$/.exec(req.headers.get('Authorization')||'');
@@ -47,27 +47,29 @@ else if(method==='POST'&&p==='/v1/auth/login'){
  const key=await sha(email+'|'+ip),t=Date.now();
  const attempt=await env.DB.prepare('SELECT attempts,window_start FROM login_attempts WHERE key=?').bind(key).first();
  if(attempt&&t-attempt.window_start<900000&&attempt.attempts>=5)return error(429,'rate_limited','Too many attempts');
- if(v.role!==undefined && v.role!=='admin' && v.role!=='employee')return error(422,'validation_error','role must be admin or employee');
- // Explicit role selection is mandatory when the same email is both administrator and staff.
- // Missing role retains the old admin-first behavior for backwards compatibility.
- const requestedRole=v.role||'auto';
- const admin=requestedRole==='employee'?null:await env.DB.prepare('SELECT * FROM admins WHERE email=?').bind(email).first();
- const staff=requestedRole==='admin'?null:await env.DB.prepare('SELECT '+select.split(',').map(c=>'employees.'+c).join(',')+',ec.password_hash AS employee_hash,ec.password_salt AS employee_salt FROM employees JOIN employee_credentials ec ON ec.employee_id=employees.id WHERE lower(employees.email)=? AND employees.active=1').bind(email).first();
- const actor=admin||staff;
+ // One login per email. Admin privileges are determined exclusively by membership in the admin table.
+ // Legacy admin credentials take precedence, preventing two different passwords for the same email.
+ const admin=await env.DB.prepare('SELECT * FROM admins WHERE lower(email)=?').bind(email).first();
+ const profile=await env.DB.prepare('SELECT '+select+' FROM employees WHERE lower(email)=?').bind(email).first();
+ const staff=admin?null:await env.DB.prepare('SELECT '+select.split(',').map(c=>'employees.'+c).join(',')+',ec.password_hash AS employee_hash,ec.password_salt AS employee_salt FROM employees JOIN employee_credentials ec ON ec.employee_id=employees.id WHERE lower(employees.email)=? AND employees.active=1').bind(email).first();
  const salt=admin?.password_salt||staff?.employee_salt||'placeholder-salt';
  const hashed=await hashPassword(v.password,salt);
- if(!actor||!safeEqual(hashed,admin?.password_hash||staff?.employee_hash)){
+ const valid=(admin||staff)&&(!profile||profile.active)&&safeEqual(hashed,admin?.password_hash||staff?.employee_hash);
+ if(!valid){
    await recordFailedLogin(env,key,t);
    return error(401,'invalid_credentials','Invalid credentials');
  }
  await env.DB.prepare('DELETE FROM login_attempts WHERE key=?').bind(key).run();
- const session=await issueSession(env,admin?'sessions':'employee_sessions',actor.id,admin?'admin':'employee');
- response=json({...session,...(admin?{admin:{id:admin.id,email:admin.email}}:{employee:employee(staff)})});
+ const isAdmin=Boolean(admin);
+ const session=await issueSession(env,isAdmin?'sessions':'employee_sessions',(admin||staff).id,isAdmin?'admin':'employee');
+ response=json({...session,isAdmin,employee:profile?employee(profile):(staff?employee(staff):null),...(isAdmin?{admin:{id:admin.id,email:admin.email}}:{})});
 }
 else if(method==='POST'&&p==='/v1/auth/activate'){
  const v=await body(req);
  if(typeof v.email!=='string'||typeof v.code!=='string'||typeof v.password!=='string'||v.password.length<14||v.password.length>128)return error(422,'validation_error','Correo, código y contraseña de 14-128 caracteres obligatorios');
  const email=v.email.toLowerCase().trim();
+ const existingAdmin=await env.DB.prepare('SELECT id FROM admins WHERE lower(email)=?').bind(email).first();
+ if(existingAdmin)return error(409,'already_has_access','Este correo ya tiene acceso con contraseña de administrador');
  const invited=await env.DB.prepare('SELECT ei.employee_id,ei.code_hash,ei.expires_at FROM employee_invites ei JOIN employees e ON e.id=ei.employee_id WHERE lower(e.email)=? AND e.active=1').bind(email).first();
  const inputHash=await sha(v.code);
  if(!invited||invited.expires_at<now()||!safeEqual(invited.code_hash,inputHash))return error(403,'invalid_invitation','Código inválido o vencido');
@@ -78,20 +80,29 @@ else if(method==='POST'&&p==='/v1/auth/activate'){
  response=json({activated:true});
 }
 else if(method==='GET'&&p==='/v1/me'){
- const staff=await employeeAuth(req,env);
+ const admin=await auth(req,env);
+ const staff=admin?await env.DB.prepare('SELECT '+select+' FROM employees WHERE lower(email)=? AND active=1').bind(admin.email.toLowerCase()).first():await employeeAuth(req,env);
  if(!staff)return error(401,'unauthorized','Inicia sesión para ver tu credencial');
- response=json({role:'employee',employee:employee(staff)});
+ response=json({role:admin?'admin':'employee',isAdmin:Boolean(admin),employee:employee(staff)});
 }
 else if(method==='POST'&&p==='/v1/auth/change-password'){
- const staff=await employeeAuth(req,env);
- if(!staff)return error(401,'unauthorized','Inicia sesión para cambiar tu contraseña');
+ const admin=await auth(req,env);
+ const staff=admin?null:await employeeAuth(req,env);
+ if(!admin&&!staff)return error(401,'unauthorized','Inicia sesión para cambiar tu contraseña');
  const v=await body(req);
  if(typeof v.currentPassword!=='string'||typeof v.newPassword!=='string'||v.newPassword.length<14||v.newPassword.length>128)return error(422,'validation_error','Nueva contraseña de 14-128 caracteres obligatoria');
- const cred=await env.DB.prepare('SELECT password_hash,password_salt FROM employee_credentials WHERE employee_id=?').bind(staff.id).first();
+ const cred=admin?
+   await env.DB.prepare('SELECT password_hash,password_salt FROM admins WHERE id=?').bind(admin.id).first():
+   await env.DB.prepare('SELECT password_hash,password_salt FROM employee_credentials WHERE employee_id=?').bind(staff.id).first();
  if(!cred||!safeEqual(await hashPassword(v.currentPassword,cred.password_salt),cred.password_hash))return error(401,'invalid_credentials','Contraseña actual incorrecta');
- const salt=rand();
- await env.DB.prepare('UPDATE employee_credentials SET password_hash=?,password_salt=?,updated_at=? WHERE employee_id=?').bind(await hashPassword(v.newPassword,salt),salt,now(),staff.id).run();
- await env.DB.prepare('DELETE FROM employee_sessions WHERE employee_id=?').bind(staff.id).run();
+ const salt=rand(),hashed=await hashPassword(v.newPassword,salt);
+ if(admin){
+   await env.DB.prepare('UPDATE admins SET password_hash=?,password_salt=? WHERE id=?').bind(hashed,salt,admin.id).run();
+   await env.DB.prepare('DELETE FROM sessions WHERE admin_id=?').bind(admin.id).run();
+ }else{
+   await env.DB.prepare('UPDATE employee_credentials SET password_hash=?,password_salt=?,updated_at=? WHERE employee_id=?').bind(hashed,salt,now(),staff.id).run();
+   await env.DB.prepare('DELETE FROM employee_sessions WHERE employee_id=?').bind(staff.id).run();
+ }
  response=json({changed:true,reauthenticate:true});
 }
 else if(method==='POST'&&p==='/v1/auth/logout'){
@@ -111,6 +122,8 @@ else if(method==='POST'&&/^\/v1\/admin\/employees\/[0-9a-f-]+\/invite$/.test(p))
  if(!uuidRe.test(id))return error(404,'not_found','Employee not found');
  const staff=await env.DB.prepare('SELECT id,email,active FROM employees WHERE id=?').bind(id).first();
  if(!staff||!staff.active)return error(404,'not_found','Employee not found or inactive');
+ const existingAdmin=await env.DB.prepare('SELECT id FROM admins WHERE lower(email)=?').bind(staff.email.toLowerCase()).first();
+ if(existingAdmin)return error(409,'already_has_access','Este empleado ya tiene acceso con su cuenta administradora');
  const code=rand(),expiration=new Date(Date.now()+24*3600000).toISOString();
  await env.DB.prepare('INSERT INTO employee_invites(employee_id,code_hash,expires_at,created_at) VALUES(?,?,?,?) ON CONFLICT(employee_id) DO UPDATE SET code_hash=excluded.code_hash,expires_at=excluded.expires_at,created_at=excluded.created_at').bind(id,await sha(code),expiration,now()).run();
  response=json({email:staff.email,activationCode:code,expiresAt:expiration});

@@ -30,3 +30,9 @@ No se incluyen credenciales administrativas. La conexión Android↔Cloudflare s
 The app starts with a shared **Login** screen. `admin` sees the administration directory; `employee` is routed only to their own profile from `GET /v1/me`, never from a user-submitted slug. **Activar cuenta de empleado** accepts an invite code issued in administration via **Crear acceso**; each invite expires in 24 hours and can be redeemed once. **Mi cuenta** changes a password or logs out. Sessions are held in memory; restarting the app requires a new login.
 
 Requires backend migration `0002_employee_login.sql` and a coordinated Cloudflare deployment. Older APKs do not implement the login and activate screens. No email-sending or automatic email ownership verification is provided.
+
+## Unified account access
+
+Everyone signs in using only their email and a single password. Android no longer asks the person to choose Admin or Employee. The API returns `isAdmin` based on the administrator record, not a selection supplied by the phone. Every user with an employee record starts on **Mi credencial**; approved administrators also see **Administración** in the navigation and have a **Mi cuenta** screen for password changes. An administrator's existing password is their single account password; do not create a separate employee password for the same email. Employee activation remains available only for email addresses without an administrator account.
+
+An administrator can review other employees' private records only via authenticated administrative routes, not by guessing public employee URLs. The token is kept in memory and expires on the server. 

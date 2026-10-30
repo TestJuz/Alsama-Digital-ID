@@ -27,3 +27,9 @@ The first administrator is configured by the existing one-time `POST /v1/auth/bo
 `npm install`; `npx wrangler d1 migrations apply alsama-digital-id --local`; `npx wrangler dev --local`. CI uses a disposable local D1 and checks enrollment, employee isolation, revocation and password changes. This is not production deployment; production requires running the remote migration and deploying the Worker.
 
 Cloudflare free plans have quota and usage conditions. No Google Wallet integration.
+
+## Unified user identity and privileges
+
+Sign in once using `POST /v1/auth/login` with just `email` and `password`. Neither the Android app nor the user selects a role. The response contains `isAdmin` (assigned from server-side `admins` membership), the account's `employee` profile when available, and a short-lived bearer token. Administrators with employee records can call `GET /v1/me` to view their own non-public credential, and they still have access to admin-only endpoints. Employees cannot call any `/v1/admin/*` endpoint. An inactive employee record blocks login, including for a matching administrator.
+
+Legacy admin passwords remain valid. If an email exists in both `admins` and `employees`, its admin password is its single canonical password; issuing an employee invitation for the same email is rejected with HTTP 409. Both employee and admin sessions support password rotation at `POST /v1/auth/change-password` and invalidate old tokens. Onboarding new employees without admin rights still uses a single-use invitation. `isAdmin` is informational to clients; all authorization is checked by the backend.
