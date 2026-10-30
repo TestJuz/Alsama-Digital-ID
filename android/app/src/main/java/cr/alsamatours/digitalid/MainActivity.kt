@@ -282,21 +282,60 @@ private fun QrCode(content:String){
 }
 
 @Composable
-private fun LoginScreen(onLogin:(String,String)->Unit) {
+private fun LoginScreen(onLogin:(String,String)->Unit, onActivate:()->Unit) {
     var email by remember { mutableStateOf("") };var password by remember { mutableStateOf("") }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),verticalArrangement=Arrangement.spacedBy(18.dp)) {
         Icon(Icons.Default.AdminPanelSettings, null, tint=Forest,modifier=Modifier.size(48.dp))
-        Text("Acceso administrativo",fontSize=25.sp,fontWeight=FontWeight.Bold,color=Forest)
-        Text("Solo personal autorizado puede administrar empleados.",color=Leaf)
-        OutlinedTextField(email,{email=it},label={Text("Correo administrador")},singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Email),modifier=Modifier.fillMaxWidth())
+        Text("Iniciar sesión",fontSize=25.sp,fontWeight=FontWeight.Bold,color=Forest)
+        Text("Empleados: accede a tu propia credencial. Administradores: gestiona el directorio.",color=Leaf)
+        OutlinedTextField(email,{email=it},label={Text("Correo de tu cuenta")},singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Email),modifier=Modifier.fillMaxWidth())
         OutlinedTextField(password,{password=it},label={Text("Contraseña")},singleLine=true,visualTransformation=PasswordVisualTransformation(),modifier=Modifier.fillMaxWidth())
         Button(onClick={onLogin(email,password)},enabled=email.contains("@")&&password.isNotBlank(),modifier=Modifier.fillMaxWidth()){ Text("Iniciar sesión") }
-        Text("La cuenta administrativa se configura en Cloudflare, no está integrada en el APK.",fontSize=12.sp,color=Leaf)
+        OutlinedButton(onClick=onActivate,modifier=Modifier.fillMaxWidth()){Text("Activar cuenta de empleado")}
+        Text("El administrador proporciona un código de activación individual. Nunca compartas tu contraseña.",fontSize=12.sp,color=Leaf)
     }
 }
 
 @Composable
-private fun DirectoryScreen(employees:List<Employee>, onReload:()->Unit, onNew:()->Unit,onEdit:(Employee)->Unit,onOpen:(Employee)->Unit,onActive:(Employee,Boolean)->Unit,onLogout:()->Unit) {
+private fun ActivationScreen(onBack:()->Unit,onActivate:(String,String,String)->Unit) {
+    var email by remember { mutableStateOf("") }
+    var code by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    var repeat by remember { mutableStateOf("") }
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),verticalArrangement=Arrangement.spacedBy(15.dp)) {
+        Text("Activar mi cuenta",fontSize=25.sp,fontWeight=FontWeight.Bold,color=Forest)
+        Text("Solicita al administrador un código individual. Tu correo debe coincidir con el registrado en Alsama.",color=Leaf)
+        OutlinedTextField(email,{email=it},label={Text("Correo registrado")},singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Email),modifier=Modifier.fillMaxWidth())
+        OutlinedTextField(code,{code=it.trim()},label={Text("Código de activación (64 caracteres)")},singleLine=true,modifier=Modifier.fillMaxWidth())
+        OutlinedTextField(password,{password=it},label={Text("Nueva contraseña (mínimo 14 caracteres)")},visualTransformation=PasswordVisualTransformation(),modifier=Modifier.fillMaxWidth())
+        OutlinedTextField(repeat,{repeat=it},label={Text("Confirmar contraseña")},visualTransformation=PasswordVisualTransformation(),modifier=Modifier.fillMaxWidth())
+        if(repeat.isNotBlank()&&password!=repeat) Text("Las contraseñas no coinciden",color=Color.Red)
+        Button(onClick={onActivate(email,code,password)},enabled=email.contains("@")&&code.length==64&&password.length>=14&&password==repeat,modifier=Modifier.fillMaxWidth()){Text("Activar cuenta")}
+        OutlinedButton(onClick=onBack,modifier=Modifier.fillMaxWidth()){Text("Volver al inicio de sesión")}
+    }
+}
+
+@Composable
+private fun AccountScreen(email:String,onChangePassword:(String,String)->Unit,onLogout:()->Unit) {
+    var current by remember { mutableStateOf("") }
+    var next by remember { mutableStateOf("") }
+    var repeat by remember { mutableStateOf("") }
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),verticalArrangement=Arrangement.spacedBy(15.dp)) {
+        Text("Mi cuenta",fontSize=25.sp,fontWeight=FontWeight.Bold,color=Forest)
+        Text(email,color=Leaf)
+        HorizontalDivider()
+        Text("Cambiar contraseña",fontSize=20.sp,fontWeight=FontWeight.SemiBold,color=Forest)
+        OutlinedTextField(current,{current=it},label={Text("Contraseña actual")},visualTransformation=PasswordVisualTransformation(),modifier=Modifier.fillMaxWidth())
+        OutlinedTextField(next,{next=it},label={Text("Contraseña nueva (mínimo 14 caracteres)")},visualTransformation=PasswordVisualTransformation(),modifier=Modifier.fillMaxWidth())
+        OutlinedTextField(repeat,{repeat=it},label={Text("Confirmar contraseña nueva")},visualTransformation=PasswordVisualTransformation(),modifier=Modifier.fillMaxWidth())
+        Button(onClick={onChangePassword(current,next)},enabled=current.isNotBlank()&&next.length>=14&&next==repeat,modifier=Modifier.fillMaxWidth()){Text("Guardar nueva contraseña")}
+        Spacer(Modifier.height(10.dp))
+        OutlinedButton(onClick=onLogout,modifier=Modifier.fillMaxWidth()){Icon(Icons.Default.Logout,null);Spacer(Modifier.width(8.dp));Text("Cerrar sesión")}
+    }
+}
+
+@Composable
+private fun DirectoryScreen(employees:List<Employee>, onReload:()->Unit, onNew:()->Unit,onEdit:(Employee)->Unit,onOpen:(Employee)->Unit,onActive:(Employee,Boolean)->Unit,onInvite:(Employee)->Unit,onLogout:()->Unit) {
     Column(Modifier.fillMaxSize().padding(16.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
         Row(verticalAlignment=Alignment.CenterVertically){Text("Empleados",fontSize=26.sp,fontWeight=FontWeight.Bold,color=Forest,modifier=Modifier.weight(1f));IconButton(onClick=onReload){Icon(Icons.Default.Refresh,"Actualizar")};IconButton(onClick=onLogout){Icon(Icons.Default.Logout,"Salir")}}
         Button(onClick=onNew,modifier=Modifier.fillMaxWidth()){Icon(Icons.Default.Add,null);Spacer(Modifier.width(8.dp));Text("Agregar empleado")}
@@ -311,6 +350,7 @@ private fun DirectoryScreen(employees:List<Employee>, onReload:()->Unit, onNew:(
                         Row(verticalAlignment=Alignment.CenterVertically){
                             TextButton(onClick={onEdit(e)}){Text("Editar")}
                             TextButton(onClick={onOpen(e)}){Text("Credencial")}
+                            TextButton(onClick={onInvite(e)},enabled=e.active){Text("Crear acceso")}
                             Spacer(Modifier.weight(1f))
                             Switch(checked=e.active,onCheckedChange={onActive(e,it)})
                         }
@@ -334,7 +374,7 @@ private fun EmployeeEditor(initial:Employee,onCancel:()->Unit,onSave:(Employee)-
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),verticalArrangement=Arrangement.spacedBy(12.dp)){
         Text(if(initial.id.isBlank()) "Nuevo empleado" else "Editar empleado",fontSize=25.sp,fontWeight=FontWeight.Bold,color=Forest)
         OutlinedTextField(name,{name=it},label={Text("Nombre completo")},modifier=Modifier.fillMaxWidth())
-        OutlinedTextField(slug,{slug=it},label={Text("Identificador (slug)")},modifier=Modifier.fillMaxWidth(),singleLine=true)
+        OutlinedTextField(slug,{slug=it.lowercase().replace(" ", "-")},label={Text("Identificador (slug)")},modifier=Modifier.fillMaxWidth(),singleLine=true)
         OutlinedTextField(job,{job=it},label={Text("Puesto")},modifier=Modifier.fillMaxWidth())
         OutlinedTextField(email,{email=it},label={Text("Correo")},modifier=Modifier.fillMaxWidth(),keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Email))
         OutlinedTextField(phone,{phone=it},label={Text("Teléfono")},modifier=Modifier.fillMaxWidth(),keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Phone))
